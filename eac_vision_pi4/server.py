@@ -12,7 +12,7 @@ from urllib.parse import quote
 import aiohttp
 from aiohttp import WSMsgType, web
 
-from core import FILE_RE, HA_REST, GO_API, MAX_CAMERAS, Vision, valid_source
+from core import FILE_RE, HA_REST, GO_API, MAX_CAMERAS, Vision
 
 HERE = Path(__file__).resolve().parent
 DAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -83,17 +83,11 @@ async def set_camera(request: web.Request) -> web.Response:
         raise web.HTTPBadRequest(text="Questa entità non è disponibile nell'integrazione ONVIF")
     body = await request.json()
     cam = v.config["cameras"][cid]
-    source = str(body.get("source", "")).strip()
-    clear = body.get("clear_source") is True
-    if source and not valid_source(source):
-        raise web.HTTPBadRequest(text="Usa un indirizzo onvif://, rtsp:// o rtsps:// valido")
-    if source and not cam.get("source") and len(v.configured()) >= MAX_CAMERAS:
-        raise web.HTTPBadRequest(text="Il limite di questa versione è 16 telecamere configurate")
-    mode = "off" if clear else body.get("mode", "continuous" if source and not cam.get("source") else cam.get("mode", "off"))
+    if "source" in body or "clear_source" in body:
+        raise web.HTTPBadRequest(text="Il flusso viene letto dall'integrazione ONVIF di Home Assistant")
+    mode = body.get("mode", cam.get("mode", "continuous"))
     if mode not in {"off", "continuous", "motion"}:
         raise web.HTTPBadRequest(text="Modalità di registrazione non valida")
-    if mode != "off" and not valid_source("" if clear else source or cam.get("source", "")):
-        raise web.HTTPBadRequest(text="Configura prima il flusso ONVIF o RTSP diretto")
     motion_entity = str(body.get("motion_entity", cam.get("motion_entity", ""))).strip()
     if motion_entity:
         reg = next((e for e in v.registry if e.get("entity_id") == motion_entity and e.get("platform") == "onvif"
@@ -107,23 +101,13 @@ async def set_camera(request: web.Request) -> web.Response:
         cam["name"] = str(body["name"]).strip()[:80] or cam["name"]
     cam["mode"] = mode
     cam["motion_entity"] = motion_entity
-    old_source = cam.get("source", "")
-    if source:
-        cam["source"] = source
-    elif clear:
-        cam["source"] = ""
-        cam["mode"] = "off"
     if "selected" in body:
         selected = v.config["selected"]
         if body["selected"] is True and cid not in selected:
             selected.append(cid)
         elif body["selected"] is False and cid in selected:
             selected.remove(cid)
-    elif source and cid not in v.config["selected"]:
-        v.config["selected"].append(cid)
     v.save()
-    if old_source != cam.get("source", ""):
-        await v.restart_relay()
     return web.json_response(v.public_camera(cid, cam))
 
 
@@ -160,7 +144,7 @@ async def snapshot(request: web.Request) -> web.Response:
 async def relay_live(request: web.Request) -> web.WebSocketResponse:
     cid = cid_of(request) if "cid" in request.match_info else request.query.get("src", "")
     v = vision(request)
-    if cid not in v.config["cameras"] or not valid_source(v.config["cameras"][cid].get("source", "")):
+    if cid not in v.config["cameras"] or cid not in v.sources:
         raise web.HTTPNotFound(text="Stream non configurato")
     if not v.relay or v.relay.returncode is not None:
         raise web.HTTPBadGateway(text="Motore video non disponibile")

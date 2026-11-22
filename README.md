@@ -11,7 +11,7 @@ Repository per installare **EAC Vision Pi 4** dallo Store delle App di Home Assi
 
 Puoi anche aprire direttamente il [collegamento per aggiungere il repository](https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2Fgianni7779%2Feac-vision-home-assistant), scegliere il tuo Home Assistant e confermare l'aggiunta.
 
-Le telecamere vanno aggiunte prima all'integrazione ONVIF di Home Assistant. Per ogni telecamera, EAC Vision richiede l'indirizzo diretto ONVIF o RTSP. La registrazione H24 è preimpostata; per registrare sul NAS, monta la condivisione in **Impostazioni → Sistema → Archiviazione** come spazio **Media**, poi seleziona il percorso `/media/NOME` nell'app.
+Le telecamere vanno aggiunte prima all'integrazione ONVIF di Home Assistant. EAC Vision usa automaticamente il flusso e il profilo di ciascuna entità ONVIF: non devi inserire di nuovo URL o credenziali. L'app legge la configurazione di Home Assistant **in sola lettura** per ottenere questi dati; le credenziali non vengono inviate ai browser. La registrazione H24 è preimpostata; per registrare sul NAS, monta la condivisione in **Impostazioni → Sistema → Archiviazione** come spazio **Media**, poi seleziona il percorso `/media/NOME` nell'app.
 
 Per configurazione, limiti e prova iniziale su mini PC: [guida completa](eac_vision_pi4/DOCS.md).
 

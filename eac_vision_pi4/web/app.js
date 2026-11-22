@@ -138,6 +138,7 @@ async function update() {
 function renderSettings() {
   if(!state)return;
   $('ha-error').hidden=!state.ha_error;$('ha-error').textContent=state.ha_error||'';
+  $('source-error').hidden=!state.source_error;$('source-error').textContent=state.source_error||'';
   $('video-error').hidden=state.relay&&state.ffmpeg&&!state.memory_paused;$('video-error').textContent=!state.relay?'Motore video go2rtc non avviato. Controlla il registro dell’app.':!state.ffmpeg?'FFmpeg non disponibile: il live funziona, la registrazione no.':state.memory_paused?'Memoria disponibile bassa: registrazione sospesa per proteggere Home Assistant.':'';
   $('cam-count').textContent=state.cameras.filter(c=>c.has_source).length+' / '+state.max_cameras;
   const list=$('camera-list');list.replaceChildren();
@@ -146,7 +147,7 @@ function renderSettings() {
     const card=document.createElement('div');card.className='camera-item';
     const head=document.createElement('div');head.className='camera-item-head';
     const name=document.createElement('strong');name.textContent=cam.name;head.append(name);
-    const mark=document.createElement('span');mark.className='state'+(cam.has_source?' ok':'');mark.textContent=cam.has_source?'● Collegata':'○ Da configurare';head.append(mark);card.append(head);
+    const mark=document.createElement('span');mark.className='state'+(cam.has_source?' ok':'');mark.textContent=cam.has_source?'● ONVIF pronto':'○ ONVIF non disponibile';head.append(mark);card.append(head);
     const info=document.createElement('small');info.textContent=cam.entity_id;card.append(info);
     const bottom=document.createElement('div');bottom.className='camera-item-bottom';
     const detail=document.createElement('span');detail.className='muted';detail.textContent=cam.mode==='continuous'?'Registrazione continua':cam.mode==='motion'?'Registrazione al movimento':'Solo visione';bottom.append(detail);
@@ -160,14 +161,14 @@ function renderSettings() {
 }
 function openCamera(cam) {
   selectedCam=cam;$('dialog-title').textContent=cam.name;$('dialog-entity').textContent=cam.entity_id;
-  $('cam-name').value=cam.name;$('cam-source').value='';$('cam-mode').value=cam.has_source?cam.mode:'continuous';
+  $('cam-name').value=cam.name;$('cam-mode').value=cam.mode;
   $('cam-selected').checked=cam.selected;
-  $('source-hint').textContent=cam.has_source?'Collegamento già salvato. Lascia vuoto per conservarlo.':'Inserisci indirizzo ONVIF o RTSP e credenziali della telecamera.';
+  $('source-hint').textContent=cam.has_source?'Il profilo video arriva dall’integrazione ONVIF di Home Assistant.':'Flusso non disponibile: controlla la telecamera nell’integrazione ONVIF di Home Assistant.';
   $('camera-dialog').showModal();
 }
 async function saveCamera(event) {
   event.preventDefault();if(!selectedCam)return;
-  const body={name:$('cam-name').value,source:$('cam-source').value.trim(),mode:$('cam-mode').value,selected:$('cam-selected').checked};
+  const body={name:$('cam-name').value,mode:$('cam-mode').value,selected:$('cam-selected').checked};
   try{await request('api/cameras/'+encodeURIComponent(selectedCam.id),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});$('camera-dialog').close();toast('Telecamera salvata');await update()}catch(error){toast(error.message)}
 }
 async function saveStorage(event) {
@@ -200,7 +201,6 @@ $('refresh-button').addEventListener('click',async()=>{try{state=await request('
 $('discover-button').addEventListener('click',()=>$('refresh-button').click());
 $('camera-form').addEventListener('submit',saveCamera);
 $('dialog-close').addEventListener('click',()=>$('camera-dialog').close());
-$('clear-source').addEventListener('click',async()=>{if(!selectedCam||!confirm('Rimuovere il flusso diretto di questa telecamera?'))return;try{await request('api/cameras/'+selectedCam.id,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({clear_source:true,selected:false})});$('camera-dialog').close();await update();toast('Collegamento rimosso')}catch(error){toast(error.message)}});
 $('storage-form').addEventListener('submit',saveStorage);
 for(const id of ['storage-path','retention-days','max-gb'])$(id).addEventListener('input',()=>{storageDirty=true});
 $('copy-key').addEventListener('click',async()=>{try{await navigator.clipboard.writeText(state.client_key);toast('Codice copiato')}catch{toast('Seleziona e copia il codice mostrato')}});

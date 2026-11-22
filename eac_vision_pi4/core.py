@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import ipaddress
 import json
 import os
 import re
@@ -12,7 +13,7 @@ import signal
 import time
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlencode, urlsplit
 
 import aiohttp
 
@@ -22,6 +23,7 @@ GO2RTC = os.environ.get("EAC_GO2RTC", "/usr/local/bin/go2rtc")
 FFMPEG = os.environ.get("EAC_FFMPEG", "/usr/bin/ffmpeg")
 HA_REST = os.environ.get("EAC_HA_REST", "http://supervisor/core/api")
 HA_WS = os.environ.get("EAC_HA_WS", "ws://supervisor/core/websocket")
+HA_CONFIG = Path(os.environ.get("EAC_HA_CONFIG", "/homeassistant"))
 GO_API = "http://127.0.0.1:11984"
 GO_RTSP = "rtsp://127.0.0.1:18554"
 MAX_CAMERAS = 16
@@ -48,6 +50,41 @@ def valid_source(value: str) -> bool:
         return uri.scheme in {"rtsp", "rtsps", "onvif"} and bool(uri.hostname) and not any(c in value for c in "\r\n\0")
     except ValueError:
         return False
+
+
+def onvif_source(data: dict, profile_token: str) -> str | None:
+    """Build the same ONVIF profile source used by the HA camera entity."""
+    host = str(data.get("host") or "").strip()
+    if not host or any(ch in host for ch in "/?#@ \r\n\0"):
+        return None
+    try:
+        port = int(data.get("port") or 80)
+    except (TypeError, ValueError):
+        return None
+    if not 1 <= port <= 65535:
+        return None
+    try:
+        if ipaddress.ip_address(host).version == 6:
+            host = f"[{host}]"
+    except ValueError:
+        if ":" in host or "[" in host or "]" in host:
+            return None
+    user = str(data.get("username") or "")
+    password = str(data.get("password") or "")
+    credentials = quote(user, safe="") + (":" + quote(password, safe="") if password else "") + "@" if user else ""
+    query = "?" + urlencode({"subtype": profile_token}) if profile_token else ""
+    return f"onvif://{credentials}{host}:{port}{query}"
+
+
+def onvif_config_entries() -> dict[str, dict]:
+    path = HA_CONFIG / ".storage" / "core.config_entries"
+    content = json.loads(path.read_text(encoding="utf-8"))
+    entries = content.get("data", {}).get("entries", [])
+    if not isinstance(entries, list):
+        raise ValueError("Configurazione ONVIF di Home Assistant non valida")
+    return {entry["entry_id"]: entry.get("data", {}) for entry in entries
+            if isinstance(entry, dict) and entry.get("domain") == "onvif"
+            and isinstance(entry.get("entry_id"), str) and isinstance(entry.get("data"), dict)}
 
 
 def memory_available_mb() -> int | None:
@@ -80,6 +117,12 @@ class Vision:
                     cam["mode"] = "continuous"
             self.config["record_policy"] = "h24"
             self.save()
+        # Sources from earlier versions are replaced by the ONVIF integration.
+        old_sources = False
+        for cam in self.config["cameras"].values():
+            old_sources = cam.pop("source", None) is not None or old_sources
+        if old_sources:
+            self.save()
         self.secret_path = DATA / "client_key"
         if not self.secret_path.exists():
             self.secret_path.write_text(secrets.token_urlsafe(32), encoding="ascii")
@@ -90,6 +133,8 @@ class Vision:
         self.registry: list[dict] = []
         self.states: dict[str, dict] = {}
         self.discovered: list[dict] = []
+        self.sources: dict[str, str] = {}
+        self.source_error = "In attesa della configurazione ONVIF di Home Assistant"
         self.ha_error = "In attesa di Home Assistant"
         self.relay: asyncio.subprocess.Process | None = None
         self.recorders: dict[str, asyncio.subprocess.Process] = {}
@@ -151,7 +196,7 @@ class Vision:
             raise RuntimeError("Stati Home Assistant non validi")
         return {row["entity_id"]: row for row in rows if isinstance(row, dict) and isinstance(row.get("entity_id"), str)}
 
-    def sync_discovery(self) -> None:
+    def sync_discovery(self) -> bool:
         motion_by_device: dict[str, str] = {}
         for ent in self.registry:
             entity = ent.get("entity_id", "")
@@ -171,20 +216,45 @@ class Vision:
                     "motion_entity": motion_by_device.get(ent.get("device_id", ""), "")}
             found.append(item)
             if cid not in self.config["cameras"]:
-                self.config["cameras"][cid] = {"entity_id": entity, "name": item["name"], "source": "", "mode": "off", "motion_entity": item["motion_entity"]}
+                self.config["cameras"][cid] = {"entity_id": entity, "name": item["name"], "mode": "continuous", "motion_entity": item["motion_entity"]}
                 changed = True
+                if cid not in self.config["selected"] and len(self.config["selected"]) < MAX_CAMERAS:
+                    self.config["selected"].append(cid)
             elif not self.config["cameras"][cid].get("motion_entity") and item["motion_entity"]:
                 self.config["cameras"][cid]["motion_entity"] = item["motion_entity"]
                 changed = True
         self.discovered = found
         if changed:
             self.save()
+        try:
+            entries = onvif_config_entries()
+        except (OSError, ValueError, TypeError) as exc:
+            self.source_error = "Configurazione ONVIF non leggibile: " + type(exc).__name__
+            return False
+        new_sources = {}
+        for ent in self.registry:
+            entity = ent.get("entity_id", "")
+            if ent.get("platform") != "onvif" or not entity.startswith("camera.") or entity not in self.states:
+                continue
+            unique_id = ent.get("unique_id", "")
+            profile = unique_id.rsplit("#", 1)[-1] if isinstance(unique_id, str) and "#" in unique_id else ""
+            entry = entries.get(ent.get("config_entry_id", ""), {})
+            source = onvif_source(entry, profile) if entry else None
+            if source and profile and len(new_sources) < MAX_CAMERAS:
+                new_sources[camera_id(entity)] = source
+        self.source_error = ("" if len(new_sources) == len(found) else
+                             "Alcune telecamere ONVIF non hanno un profilo utilizzabile; controlla l'integrazione in Home Assistant")
+        changed_sources = new_sources != self.sources
+        self.sources = new_sources
+        return changed_sources
 
     async def refresh_ha(self, registry: bool = False) -> None:
         if registry:
             self.registry = await self.ha_registry()
         self.states = await self.ha_states()
-        self.sync_discovery()
+        changed_sources = self.sync_discovery()
+        if changed_sources:
+            await self.restart_relay()
         self.ha_error = ""
 
     async def ha_loop(self) -> None:
@@ -228,13 +298,13 @@ class Vision:
                 await asyncio.sleep(5)
 
     def configured(self) -> list[tuple[str, dict]]:
-        return [(cid, cam) for cid, cam in self.config["cameras"].items() if valid_source(cam.get("source", ""))]
+        return [(cid, cam) for cid, cam in self.config["cameras"].items() if cid in self.sources]
 
     def relay_config(self) -> str:
         lines = ['api:', '  listen: "127.0.0.1:11984"', 'rtsp:', '  listen: "127.0.0.1:18554"',
                  'webrtc:', '  listen: ""', 'srtp:', '  listen: ""', 'log:', '  level: warn', 'streams:']
         for cid, cam in self.configured():
-            lines.append("  " + cid + ": " + json.dumps(cam["source"]))
+            lines.append("  " + cid + ": " + json.dumps(self.sources[cid]))
         return "\n".join(lines) + "\n"
 
     async def start_relay(self) -> None:
@@ -477,7 +547,7 @@ class Vision:
 
     def public_camera(self, cid: str, cam: dict) -> dict:
         return {"id": cid, "entity_id": cam.get("entity_id", ""), "name": cam.get("name", cid),
-                "has_source": valid_source(cam.get("source", "")), "mode": cam.get("mode", "off"),
+                "has_source": cid in self.sources, "mode": cam.get("mode", "off"),
                 "motion_entity": cam.get("motion_entity", ""), "motion": self.states.get(cam.get("motion_entity", ""), {}).get("state") == "on",
                 "recording": cid in self.recorders and self.recorders[cid].returncode is None,
                 "record_error": self.record_errors.get(cid, ""),
@@ -486,7 +556,7 @@ class Vision:
     def status(self, include_key: bool = False) -> dict:
         cams = [self.public_camera(cid, cam) for cid, cam in self.config["cameras"].items()
                 if any(d["id"] == cid for d in self.discovered)]
-        result = {"name": "EAC Vision Pi 4", "ha_error": self.ha_error, "cameras": cams,
+        result = {"name": "EAC Vision Pi 4", "ha_error": self.ha_error, "source_error": self.source_error, "cameras": cams,
                   "storage": self.storage_status(), "relay": bool(self.relay and self.relay.returncode is None),
                   "ffmpeg": Path(FFMPEG).exists(),
                   "memory_available_mb": memory_available_mb(), "memory_paused": self.memory_paused,

@@ -18,15 +18,13 @@ INSTALLAZIONE
 
 TELECAMERE
 1. In Home Assistant aggiungi prima le telecamere con l'integrazione ONVIF.
-2. Apri EAC Vision Pi 4 > Impostazioni. Le entità camera ONVIF appaiono da sole.
-3. Per ogni camera premi Configura e inserisci una volta l'indirizzo diretto:
-   onvif://utente:password@192.168.1.50:80
-   oppure rtsp://utente:password@192.168.1.50:554/percorso
-   Se serve un altro profilo ONVIF aggiungi ?subtype=NOME_PROFILO.
-   Imposta il video della telecamera su H.264 per compatibilità con browser e TV.
-4. La registrazione continua 24 ore su 24 è preimpostata per ogni telecamera
-   che colleghi. Puoi spegnerla manualmente dalle impostazioni della camera.
-5. Spunta "Mostra nella vista Principale" per la dashboard e i client.
+2. Apri EAC Vision Pi 4 > Impostazioni. Le entità camera ONVIF e i loro flussi
+   appaiono da soli. Non devi reinserire indirizzi o credenziali.
+3. Imposta il video della telecamera su H.264 per compatibilità con browser e TV.
+4. La registrazione continua 24 ore su 24 è preimpostata per ogni telecamera.
+   Puoi spegnerla manualmente dalle impostazioni della camera.
+5. Scegli "Mostra nella vista Principale" per la dashboard e i client.
+   L'app legge la configurazione ONVIF di Home Assistant in sola lettura.
 
 DISCO O NAS
 1. Home Assistant > Impostazioni > Sistema > Archiviazione > Aggiungi spazio di
@@ -43,8 +41,9 @@ DISCO O NAS
 
 PC, TV E TELEFONO
 In Impostazioni EAC Vision Pi 4 copia il codice client. Nell'app EAC Vision
-scegli "Collega EAC Vision NVR" e inserisci IP locale del Raspberry, porta 8766
-e codice. PC e TV LG/Samsung importano la vista Principale; su Android
+scegli "Collega EAC Vision NVR" e inserisci l'indirizzo locale del tuo
+Home Assistant, porta 8766 (non 8123) e codice. PC e TV LG/Samsung importano
+la vista Principale; su Android
 aggiungi le telecamere importate alla vista con il comando "Vista +".
 Le registrazioni si possono aprire da tutti questi client.
 Non aprire la porta 8766 su Internet.
