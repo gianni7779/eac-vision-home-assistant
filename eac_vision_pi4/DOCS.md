@@ -1,4 +1,4 @@
-# EAC Vision Pi 4
+# EAC Vision Home Assistant
 
 Dashboard dentro Home Assistant, importazione delle entità ONVIF e registrazione video continua H24 su disco o NAS. Non usa Frigate né analisi AI. Supporta Home Assistant OS su Raspberry Pi 4 a 64 bit e mini PC x64.
 
@@ -15,7 +15,9 @@ Per ottenere il flusso originale senza ricodificarlo tramite Home Assistant, l'a
 
 Monta un NAS in **Impostazioni → Sistema → Archiviazione** di Home Assistant con uso **Media**. Inserisci nell'app la cartella `/media/NOME_NAS`, già esistente. L'app crea soltanto le sottocartelle delle telecamere. Ogni nuova telecamera configurata ha la registrazione continua H24 preimpostata. La puoi disattivare manualmente. La registrazione riparte dopo il riavvio di Home Assistant e non dipende dal fatto che qualcuno stia guardando il live.
 
-Il registratore prende il flusso condiviso da go2rtc, lo copia in segmenti MP4 di circa 5 minuti e non codifica video. I file contengono solo video H.264; l'audio non viene registrato. Un file in scrittura appare nell'archivio solo quando è stato chiuso correttamente. Se uno stream resta fermo per 45 secondi, il processo viene riavviato. Se il NAS scompare, lo spazio scende sotto 2 GB o la memoria disponibile del Pi scende sotto 256 MB, l'app ferma i processi di registrazione. Li riprende quando la memoria supera 512 MB. Il marker `.eacvision-storage-id` identifica il supporto scelto e impedisce che un NAS smontato venga sostituito silenziosamente dalla cartella locale. I file vengono eliminati secondo i giorni e il limite GB configurati.
+Il registratore prende il flusso condiviso da go2rtc, lo copia in segmenti MP4 di circa 5 minuti e non codifica video. I file contengono solo video H.264; l'audio non viene registrato. Un file in scrittura appare nell'archivio solo quando è stato chiuso correttamente. Se uno stream resta fermo per 45 secondi, il processo viene riavviato. Se il NAS scompare, lo spazio scende sotto 2 GB o la memoria disponibile del dispositivo scende sotto 256 MB, l'app ferma i processi di registrazione. Li riprende quando la memoria supera 512 MB. Il marker `.eacvision-storage-id` identifica il supporto scelto e impedisce che un NAS smontato venga sostituito silenziosamente dalla cartella locale. I file vengono eliminati secondo i giorni e il limite GB configurati.
+
+Nella UI **Registrazioni** non devi aprire i segmenti uno per uno: seleziona telecamera e giorno, poi tocca l'orario sulla barra. Il blu indica dove esiste un video; puoi anche usare i pulsanti delle ore. Il lettore passa al segmento successivo quando quello in corso termina. Se mancano riprese per un intervallo, la barra lascia vuoto quel tratto e il clic porta al prossimo video disponibile. Il file ancora in scrittura non compare finché non è chiuso.
 
 ## Altri dispositivi EAC Vision
 

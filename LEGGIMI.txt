@@ -1,5 +1,5 @@
-EAC VISION PER RASPBERRY PI 4 IN HOME ASSISTANT
-=============================================
+EAC VISION HOME ASSISTANT
+=========================
 
 Questa cartella contiene una app di Home Assistant OS. Puoi provarla
 prima su un mini PC x64 con Home Assistant OS e poi sul Raspberry Pi 4 a 64 bit.
@@ -11,14 +11,14 @@ INSTALLAZIONE
 2. Apri Impostazioni > App > Installa app. Dal menu in alto a destra scegli
    Repository e incolla questo link:
    https://github.com/gianni7779/eac-vision-home-assistant
-3. Premi Aggiungi. Cerca "EAC Vision Pi 4" nello Store, installa, avvia e
+3. Premi Aggiungi. Cerca "EAC Vision Home Assistant" nello Store, installa, avvia e
    apri la UI.
    Il primo avvio compila l'immagine. I binari go2rtc v1.9.15 per ARM sono
    già inclusi nel progetto per ARM64 e x64 e verificati con hash SHA-256.
 
 TELECAMERE
 1. In Home Assistant aggiungi prima le telecamere con l'integrazione ONVIF.
-2. Apri EAC Vision Pi 4 > Impostazioni. Le entità camera ONVIF e i loro flussi
+2. Apri EAC Vision Home Assistant > Impostazioni. Le entità camera ONVIF e i loro flussi
    appaiono da soli. Non devi reinserire indirizzi o credenziali.
 3. Imposta il video della telecamera su H.264 per compatibilità con browser e TV.
 4. La registrazione continua 24 ore su 24 è preimpostata per ogni telecamera.
@@ -33,14 +33,15 @@ DISCO O NAS
 2. Il NAS comparirà come /media/NOME_SCEGLIUTO. Inserisci questo percorso esatto
    nelle impostazioni di EAC Vision e premi "Salva archivio".
 3. Quando l'archivio è pronto, le telecamere configurate iniziano a registrare
-   sempre, anche se nessuno guarda il live. I file MP4 da circa 5 minuti
-   vengono salvati sul NAS e presentati ordinati nell'interfaccia.
+   sempre, anche se nessuno guarda il live. I file MP4 brevi vengono salvati
+   sul NAS; nella UI scegli l'orario sulla barra delle 24 ore e il lettore
+   passa automaticamente al file successivo.
    In questa versione i file registrati contengono il video, senza audio.
 4. Puoi impostare giorni di conservazione e limite di spazio. Con meno di 2 GB
    liberi o se il NAS non risponde, nuove registrazioni vengono fermate.
 
 PC, TV E TELEFONO
-In Impostazioni EAC Vision Pi 4 copia il codice client. Nell'app EAC Vision
+In Impostazioni EAC Vision Home Assistant copia il codice client. Nell'app EAC Vision
 scegli "Collega EAC Vision NVR" e inserisci l'indirizzo locale del tuo
 Home Assistant, porta 8766 (non 8123) e codice. PC e TV LG/Samsung importano
 la vista Principale; su Android

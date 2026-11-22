@@ -1,4 +1,4 @@
-"""EAC Vision Pi 4: Home Assistant ingress UI and EAC Vision LAN protocol."""
+"""EAC Vision Home Assistant: ingress UI and EAC Vision LAN protocol."""
 from __future__ import annotations
 
 import asyncio
@@ -12,7 +12,7 @@ from urllib.parse import quote
 import aiohttp
 from aiohttp import WSMsgType, web
 
-from core import FILE_RE, HA_REST, GO_API, MAX_CAMERAS, Vision
+from core import APP_NAME, APP_VERSION, FILE_RE, HA_REST, GO_API, MAX_CAMERAS, Vision
 
 HERE = Path(__file__).resolve().parent
 DAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -188,6 +188,8 @@ async def recording_file(request: web.Request) -> web.FileResponse:
     path = root / cid / filename
     if not path.is_file() or path.is_symlink():
         raise web.HTTPNotFound(text="Registrazione non trovata")
+    if path not in v.completed_recording_files(cid, filename[:10]):
+        raise web.HTTPNotFound(text="Registrazione ancora in corso")
     return web.FileResponse(path, headers={"Content-Type": "video/mp4", "Accept-Ranges": "bytes"})
 
 
@@ -204,7 +206,7 @@ async def recording_days(request: web.Request) -> web.Response:
 
 
 async def nvr_info(_: web.Request) -> web.Response:
-    return web.json_response({"app": "EAC Vision NVR", "name": "EAC Vision Pi 4", "port": 8766, "version": "0.1.1"})
+    return web.json_response({"app": "EAC Vision NVR", "name": APP_NAME, "port": 8766, "version": APP_VERSION})
 
 
 async def nvr_cameras(request: web.Request) -> web.Response:
@@ -213,7 +215,7 @@ async def nvr_cameras(request: web.Request) -> web.Response:
              "convert": False, "recorded": cam.get("mode") != "off" and bool(v.storage_root(require_space=False)),
              "recording": cid in v.recorders and v.recorders[cid].returncode is None}
             for cid, cam in v.configured()]
-    return web.json_response({"name": "EAC Vision Pi 4", "cams": cams, "mosaic": False})
+    return web.json_response({"name": APP_NAME, "cams": cams, "mosaic": False})
 
 
 async def nvr_views(request: web.Request) -> web.Response:
@@ -301,7 +303,7 @@ async def main() -> None:
                 loop.add_signal_handler(sig, stopper.set)
             except NotImplementedError:
                 pass
-        print("EAC Vision Pi 4 avviato: Home Assistant ingress 8099, client locali 8766", flush=True)
+        print("EAC Vision Home Assistant avviato: ingress 8099, client locali 8766", flush=True)
         await stopper.wait()
     finally:
         await v.stop()

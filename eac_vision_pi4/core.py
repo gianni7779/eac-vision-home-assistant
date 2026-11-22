@@ -27,6 +27,8 @@ HA_CONFIG = Path(os.environ.get("EAC_HA_CONFIG", "/homeassistant"))
 GO_API = "http://127.0.0.1:11984"
 GO_RTSP = "rtsp://127.0.0.1:18554"
 MAX_CAMERAS = 16
+APP_NAME = "EAC Vision Home Assistant"
+APP_VERSION = "0.3.0"
 FILE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}\.mp4$")
 
 
@@ -497,18 +499,25 @@ class Vision:
         return sorted((p for p in folder.iterdir() if p.is_file() and not p.is_symlink() and FILE_RE.fullmatch(p.name)
                        and (not day or p.name.startswith(day))), key=lambda p: p.name)
 
-    def segments(self, cid: str, day: str = "") -> list[dict]:
-        files = self.recording_files(cid, day)
-        # The MP4 currently written by ffmpeg has no final index yet and is not playable.
+    def completed_recording_files(self, cid: str, day: str = "") -> list[Path]:
+        files = self.recording_files(cid)
+        # Only the newest file of an active recorder can still lack the MP4 index.
         if cid in self.recorders and files:
             files = files[:-1]
+        return [path for path in files if not day or path.name.startswith(day)]
+
+    def segments(self, cid: str, day: str = "") -> list[dict]:
+        files = self.completed_recording_files(cid, day)
         result = []
         for idx, path in enumerate(files):
             try:
                 start = datetime.strptime(path.stem, "%Y-%m-%d_%H-%M-%S").timestamp()
                 next_start = (datetime.strptime(files[idx + 1].stem, "%Y-%m-%d_%H-%M-%S").timestamp()
                               if idx + 1 < len(files) else path.stat().st_mtime)
-                dur = max(1, min(300, next_start - start))
+                elapsed = next_start - start
+                if elapsed > 600:
+                    elapsed = path.stat().st_mtime - start
+                dur = max(1, min(600, elapsed))
                 result.append({"start": start, "dur": dur, "name": path.name,
                                "url": "/eacnvr/file?cam=" + cid + "&name=" + path.name, "live": False})
             except (OSError, ValueError):
@@ -516,7 +525,7 @@ class Vision:
         return result
 
     def days(self, cid: str) -> list[dict]:
-        return [{"day": day} for day in sorted({p.name[:10] for p in self.recording_files(cid)}, reverse=True)]
+        return [{"day": day} for day in sorted({p.name[:10] for p in self.completed_recording_files(cid)}, reverse=True)]
 
     async def cleanup_loop(self) -> None:
         while True:
@@ -556,7 +565,7 @@ class Vision:
     def status(self, include_key: bool = False) -> dict:
         cams = [self.public_camera(cid, cam) for cid, cam in self.config["cameras"].items()
                 if any(d["id"] == cid for d in self.discovered)]
-        result = {"name": "EAC Vision Pi 4", "ha_error": self.ha_error, "source_error": self.source_error, "cameras": cams,
+        result = {"name": APP_NAME, "version": APP_VERSION, "ha_error": self.ha_error, "source_error": self.source_error, "cameras": cams,
                   "storage": self.storage_status(), "relay": bool(self.relay and self.relay.returncode is None),
                   "ffmpeg": Path(FFMPEG).exists(),
                   "memory_available_mb": memory_available_mb(), "memory_paused": self.memory_paused,

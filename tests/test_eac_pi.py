@@ -77,8 +77,13 @@ class VisionTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("p:a@ss", json.dumps(data))
         self.assertNotIn("source", self.vision.config["cameras"][self.cid])
         response = await self.lan.get("/eacnvr/info")
-        self.assertEqual((await response.json())["app"], "EAC Vision NVR")
+        info = await response.json()
+        self.assertEqual(info["app"], "EAC Vision NVR")
+        self.assertEqual(info["name"], "EAC Vision Home Assistant")
+        self.assertEqual(info["version"], "0.3.0")
         self.assertEqual((await self.lan.get("/eacnvr/cameras")).status, 403)
+        self.assertEqual((await self.ingress.get("/web/icon.png")).status, 200)
+        self.assertEqual((await self.ingress.get("/web/dashboard.css")).status, 200)
 
         forbidden = await self.ingress.post("/api/cameras/" + self.cid, json={"source": "rtsp://example"})
         self.assertEqual(forbidden.status, 400)
@@ -108,6 +113,9 @@ class VisionTest(unittest.IsolatedAsyncioTestCase):
         file_response = await self.lan.get(segments[0]["url"] + "&key=" + key)
         self.assertEqual(file_response.status, 200)
         self.assertEqual(await file_response.read(), b"demo")
+        ranged = await self.lan.get(segments[0]["url"] + "&key=" + key, headers={"Range": "bytes=1-2"})
+        self.assertEqual(ranged.status, 206)
+        self.assertEqual(await ranged.read(), b"em")
         (core.MEDIA / "nas" / ".eacvision-storage-id").unlink()
         self.assertIsNone(self.vision.storage_root())
         disabled = await self.ingress.post("/api/cameras/" + self.cid, json={"mode": "off", "selected": False})
@@ -171,6 +179,21 @@ class VisionTest(unittest.IsolatedAsyncioTestCase):
         finally:
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
+
+    async def test_active_recording_hides_only_current_file(self):
+        self.vision.set_storage(str(core.MEDIA / "nas"), 7, 0)
+        folder = core.MEDIA / "nas" / self.cid
+        folder.mkdir()
+        old = folder / "2026-11-21_23-55-00.mp4"
+        current = folder / "2026-11-22_00-00-00.mp4"
+        old.write_bytes(b"finished")
+        current.write_bytes(b"still writing")
+        self.vision.recorders[self.cid] = SimpleNamespace(returncode=None)
+        self.assertEqual([item["name"] for item in self.vision.segments(self.cid, "2026-11-21")], [old.name])
+        self.assertEqual(self.vision.segments(self.cid, "2026-11-22"), [])
+        self.assertEqual(self.vision.days(self.cid), [{"day": "2026-11-21"}])
+        self.assertEqual((await self.ingress.get(f"/api/recording/{self.cid}/{old.name}")).status, 200)
+        self.assertEqual((await self.ingress.get(f"/api/recording/{self.cid}/{current.name}")).status, 404)
 
     async def test_live_websocket_is_relayed_to_client(self):
         self.vision.relay = SimpleNamespace(returncode=None)
