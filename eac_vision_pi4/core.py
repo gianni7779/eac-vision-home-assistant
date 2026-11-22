@@ -1,0 +1,496 @@
+"""Home Assistant discovery, go2rtc relay and copy-only recording."""
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import json
+import os
+import re
+import secrets
+import shutil
+import signal
+import time
+from datetime import datetime
+from pathlib import Path
+from urllib.parse import urlsplit
+
+import aiohttp
+
+DATA = Path(os.environ.get("EAC_DATA", "/data"))
+MEDIA = Path(os.environ.get("EAC_MEDIA", "/media"))
+GO2RTC = os.environ.get("EAC_GO2RTC", "/usr/local/bin/go2rtc")
+FFMPEG = os.environ.get("EAC_FFMPEG", "/usr/bin/ffmpeg")
+HA_REST = os.environ.get("EAC_HA_REST", "http://supervisor/core/api")
+HA_WS = os.environ.get("EAC_HA_WS", "ws://supervisor/core/websocket")
+GO_API = "http://127.0.0.1:11984"
+GO_RTSP = "rtsp://127.0.0.1:18554"
+MAX_CAMERAS = 16
+FILE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}\.mp4$")
+
+
+def atomic_json(path: Path, value: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.chmod(tmp, 0o600)
+    tmp.replace(path)
+
+
+def camera_id(entity_id: str) -> str:
+    return "cam_" + hashlib.sha256(entity_id.encode()).hexdigest()[:12]
+
+
+def valid_source(value: str) -> bool:
+    try:
+        if not isinstance(value, str):
+            return False
+        uri = urlsplit(value)
+        return uri.scheme in {"rtsp", "rtsps", "onvif"} and bool(uri.hostname) and not any(c in value for c in "\r\n\0")
+    except ValueError:
+        return False
+
+
+def memory_available_mb() -> int | None:
+    try:
+        for line in Path("/proc/meminfo").read_text(encoding="ascii").splitlines():
+            if line.startswith("MemAvailable:"):
+                return int(line.split()[1]) // 1024
+    except (OSError, ValueError, IndexError):
+        pass
+    return None
+
+
+class Vision:
+    def __init__(self):
+        DATA.mkdir(parents=True, exist_ok=True)
+        self.config_path = DATA / "vision.json"
+        try:
+            self.config = json.loads(self.config_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            self.config = {}
+        self.config.setdefault("cameras", {})
+        self.config.setdefault("storage_path", "")
+        self.config.setdefault("storage_id", "")
+        self.config.setdefault("selected", [])
+        self.config.setdefault("retention_days", 7)
+        self.config.setdefault("max_gb", 0)
+        if self.config.get("record_policy") != "h24":
+            for cam in self.config["cameras"].values():
+                if valid_source(cam.get("source", "")):
+                    cam["mode"] = "continuous"
+            self.config["record_policy"] = "h24"
+            self.save()
+        self.secret_path = DATA / "client_key"
+        if not self.secret_path.exists():
+            self.secret_path.write_text(secrets.token_urlsafe(32), encoding="ascii")
+            os.chmod(self.secret_path, 0o600)
+        self.client_key = self.secret_path.read_text(encoding="ascii").strip()
+        self.token = os.environ.get("SUPERVISOR_TOKEN", "")
+        self.session: aiohttp.ClientSession | None = None
+        self.registry: list[dict] = []
+        self.states: dict[str, dict] = {}
+        self.discovered: list[dict] = []
+        self.ha_error = "In attesa di Home Assistant"
+        self.relay: asyncio.subprocess.Process | None = None
+        self.recorders: dict[str, asyncio.subprocess.Process] = {}
+        self.progress_tasks: dict[str, asyncio.Task] = {}
+        self.record_progress: dict[str, float] = {}
+        self.record_time: dict[str, int] = {}
+        self.record_errors: dict[str, str] = {}
+        self.retry_at: dict[str, float] = {}
+        self.relay_retry_at = 0.0
+        self.last_loop_error = ""
+        self.motion_until: dict[str, float] = {}
+        self.memory_paused = False
+        self.tasks: list[asyncio.Task] = []
+
+    def save(self) -> None:
+        atomic_json(self.config_path, self.config)
+
+    async def start(self) -> None:
+        self.session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15))
+        await self.start_relay()
+        self.tasks = [asyncio.create_task(self.ha_loop()), asyncio.create_task(self.record_loop()), asyncio.create_task(self.cleanup_loop())]
+
+    async def stop(self) -> None:
+        for task in self.tasks:
+            task.cancel()
+        if self.tasks:
+            await asyncio.gather(*self.tasks, return_exceptions=True)
+        await self.stop_all_recorders()
+        await self.stop_relay()
+        if self.session:
+            await self.session.close()
+
+    async def ha_registry(self) -> list[dict]:
+        if not self.token:
+            raise RuntimeError("SUPERVISOR_TOKEN mancante: installare come app di Home Assistant")
+        assert self.session
+        async with self.session.ws_connect(HA_WS, heartbeat=20) as ws:
+            hello = await ws.receive_json(timeout=10)
+            if hello.get("type") != "auth_required":
+                raise RuntimeError("Handshake Home Assistant inatteso")
+            await ws.send_json({"type": "auth", "access_token": self.token})
+            auth = await ws.receive_json(timeout=10)
+            if auth.get("type") != "auth_ok":
+                raise RuntimeError("Autorizzazione Home Assistant fallita")
+            await ws.send_json({"id": 1, "type": "config/entity_registry/list"})
+            result = await ws.receive_json(timeout=15)
+            if not result.get("success") or not isinstance(result.get("result"), list):
+                raise RuntimeError("Registro entità ONVIF non disponibile")
+            return result["result"]
+
+    async def ha_states(self) -> dict[str, dict]:
+        if not self.token:
+            raise RuntimeError("SUPERVISOR_TOKEN mancante")
+        assert self.session
+        async with self.session.get(HA_REST + "/states", headers={"Authorization": "Bearer " + self.token}) as response:
+            response.raise_for_status()
+            rows = await response.json()
+        if not isinstance(rows, list):
+            raise RuntimeError("Stati Home Assistant non validi")
+        return {row["entity_id"]: row for row in rows if isinstance(row, dict) and isinstance(row.get("entity_id"), str)}
+
+    def sync_discovery(self) -> None:
+        motion_by_device: dict[str, str] = {}
+        for ent in self.registry:
+            entity = ent.get("entity_id", "")
+            state = self.states.get(entity, {})
+            if (ent.get("platform") == "onvif" and entity.startswith("binary_sensor.")
+                    and state.get("attributes", {}).get("device_class") == "motion" and ent.get("device_id")):
+                motion_by_device.setdefault(ent["device_id"], entity)
+        found = []
+        changed = False
+        for ent in self.registry:
+            entity = ent.get("entity_id", "")
+            if ent.get("platform") != "onvif" or not entity.startswith("camera.") or entity not in self.states:
+                continue
+            cid = camera_id(entity)
+            state = self.states[entity]
+            item = {"id": cid, "entity_id": entity, "name": state.get("attributes", {}).get("friendly_name") or entity,
+                    "motion_entity": motion_by_device.get(ent.get("device_id", ""), "")}
+            found.append(item)
+            if cid not in self.config["cameras"]:
+                self.config["cameras"][cid] = {"entity_id": entity, "name": item["name"], "source": "", "mode": "off", "motion_entity": item["motion_entity"]}
+                changed = True
+            elif not self.config["cameras"][cid].get("motion_entity") and item["motion_entity"]:
+                self.config["cameras"][cid]["motion_entity"] = item["motion_entity"]
+                changed = True
+        self.discovered = found
+        if changed:
+            self.save()
+
+    async def refresh_ha(self, registry: bool = False) -> None:
+        if registry:
+            self.registry = await self.ha_registry()
+        self.states = await self.ha_states()
+        self.sync_discovery()
+        self.ha_error = ""
+
+    async def ha_loop(self) -> None:
+        while True:
+            try:
+                await self.refresh_ha(registry=True)
+                assert self.session
+                async with self.session.ws_connect(HA_WS, heartbeat=25) as ws:
+                    hello = await ws.receive_json(timeout=10)
+                    if hello.get("type") != "auth_required":
+                        raise RuntimeError("Handshake eventi Home Assistant inatteso")
+                    await ws.send_json({"type": "auth", "access_token": self.token})
+                    if (await ws.receive_json(timeout=10)).get("type") != "auth_ok":
+                        raise RuntimeError("Eventi Home Assistant non autorizzati")
+                    await ws.send_json({"id": 1, "type": "subscribe_events", "event_type": "state_changed"})
+                    ack = await ws.receive_json(timeout=10)
+                    if not ack.get("success"):
+                        raise RuntimeError("Abbonamento ai movimenti non riuscito")
+                    last_registry = time.monotonic()
+                    while True:
+                        timeout = max(1, 60 - (time.monotonic() - last_registry))
+                        try:
+                            message = await ws.receive_json(timeout=timeout)
+                        except asyncio.TimeoutError:
+                            message = None
+                        if message and message.get("type") == "event":
+                            data = message.get("event", {}).get("data", {})
+                            entity = data.get("entity_id")
+                            if entity:
+                                if data.get("new_state") is None:
+                                    self.states.pop(entity, None)
+                                else:
+                                    self.states[entity] = data["new_state"]
+                        if time.monotonic() - last_registry >= 60:
+                            await self.refresh_ha(registry=True)
+                            last_registry = time.monotonic()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self.ha_error = str(exc)
+                await asyncio.sleep(5)
+
+    def configured(self) -> list[tuple[str, dict]]:
+        return [(cid, cam) for cid, cam in self.config["cameras"].items() if valid_source(cam.get("source", ""))]
+
+    def relay_config(self) -> str:
+        lines = ['api:', '  listen: "127.0.0.1:11984"', 'rtsp:', '  listen: "127.0.0.1:18554"',
+                 'webrtc:', '  listen: ""', 'srtp:', '  listen: ""', 'log:', '  level: warn', 'streams:']
+        for cid, cam in self.configured():
+            lines.append("  " + cid + ": " + json.dumps(cam["source"]))
+        return "\n".join(lines) + "\n"
+
+    async def start_relay(self) -> None:
+        config = DATA / "go2rtc.yaml"
+        config.write_text(self.relay_config(), encoding="utf-8")
+        os.chmod(config, 0o600)
+        if not Path(GO2RTC).exists():
+            return
+        self.relay = await asyncio.create_subprocess_exec(GO2RTC, "-config", str(config),
+                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+
+    async def stop_relay(self) -> None:
+        if self.relay and self.relay.returncode is None:
+            self.relay.terminate()
+            try:
+                await asyncio.wait_for(self.relay.wait(), 8)
+            except asyncio.TimeoutError:
+                self.relay.kill()
+                await self.relay.wait()
+        self.relay = None
+
+    async def restart_relay(self) -> None:
+        await self.stop_all_recorders()
+        await self.stop_relay()
+        self.relay_retry_at = 0
+        await self.start_relay()
+
+    def storage_root(self, require_space: bool = True) -> Path | None:
+        raw = self.config.get("storage_path", "")
+        marker = self.config.get("storage_id", "")
+        if not raw or not marker:
+            return None
+        try:
+            root = Path(raw).resolve(strict=True)
+            media = MEDIA.resolve(strict=True)
+            if not root.is_dir() or root == media or media not in root.parents:
+                return None
+            if (root / ".eacvision-storage-id").read_text(encoding="ascii").strip() != marker:
+                return None
+            if require_space and shutil.disk_usage(root).free < 2 * 1024**3:
+                return None
+            return root
+        except (OSError, ValueError):
+            return None
+
+    def storage_status(self) -> dict:
+        raw = self.config.get("storage_path", "")
+        valid = self.storage_root()
+        free_gb = None
+        if valid:
+            free_gb = round(shutil.disk_usage(valid).free / 1024**3, 1)
+        return {"path": raw, "ready": bool(valid), "free_gb": free_gb,
+                "message": "Pronto" if valid else "Scegli un disco/NAS in /media e verifica almeno 2 GB liberi"}
+
+    def set_storage(self, raw: str, retention_days: int, max_gb: int) -> None:
+        candidate = Path(raw)
+        root = candidate.resolve(strict=True)
+        media = MEDIA.resolve(strict=True)
+        if root == media or media not in root.parents or not root.is_dir():
+            raise ValueError("Scegli una cartella già esistente dentro /media, sul disco o NAS montato")
+        if not 1 <= retention_days <= 365 or not 0 <= max_gb <= 100000:
+            raise ValueError("Limiti di conservazione non validi")
+        if shutil.disk_usage(root).free < 2 * 1024**3:
+            raise ValueError("Sono necessari almeno 2 GB liberi")
+        marker_path = root / ".eacvision-storage-id"
+        marker = marker_path.read_text(encoding="ascii").strip() if marker_path.exists() else secrets.token_urlsafe(18)
+        if not marker_path.exists():
+            marker_path.write_text(marker, encoding="ascii")
+        self.config.update(storage_path=str(root), storage_id=marker, retention_days=retention_days, max_gb=max_gb)
+        self.save()
+
+    def motion_active(self, cid: str, cam: dict) -> bool:
+        entity = cam.get("motion_entity", "")
+        active = bool(entity and self.states.get(entity, {}).get("state") == "on" and not self.ha_error)
+        if active:
+            self.motion_until[cid] = time.monotonic() + 20
+        return active or time.monotonic() < self.motion_until.get(cid, 0)
+
+    async def start_recorder(self, cid: str, root: Path) -> None:
+        folder = root / cid
+        if folder.is_symlink():
+            raise OSError("Cartella telecamera non valida")
+        folder.mkdir(exist_ok=True)
+        # A single upstream is shared by go2rtc with all live viewers and this copy-only recorder.
+        args = [FFMPEG, "-hide_banner", "-loglevel", "error", "-progress", "pipe:1", "-stats_period", "5",
+                "-rtsp_transport", "tcp", "-i", GO_RTSP + "/" + cid,
+                "-map", "0:v:0", "-c:v", "copy", "-an", "-f", "segment", "-segment_time", "300",
+                "-segment_atclocktime", "1", "-reset_timestamps", "1", "-strftime", "1",
+                str(folder / "%Y-%m-%d_%H-%M-%S.mp4")]
+        try:
+            self.recorders[cid] = await asyncio.create_subprocess_exec(*args, stdin=asyncio.subprocess.DEVNULL,
+                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+            self.record_progress[cid] = time.monotonic()
+            self.record_time[cid] = -1
+            self.progress_tasks[cid] = asyncio.create_task(self.watch_progress(cid, self.recorders[cid]))
+        except (OSError, ValueError) as exc:
+            self.record_errors[cid] = type(exc).__name__
+            self.retry_at[cid] = time.monotonic() + 30
+
+    async def watch_progress(self, cid: str, proc: asyncio.subprocess.Process) -> None:
+        if not proc.stdout:
+            return
+        try:
+            while line := await proc.stdout.readline():
+                if not line.startswith(b"out_time_ms="):
+                    continue
+                try:
+                    position = int(line.split(b"=", 1)[1])
+                except ValueError:
+                    continue
+                if position > self.record_time.get(cid, -1):
+                    self.record_time[cid] = position
+                    self.record_progress[cid] = time.monotonic()
+                    self.record_errors.pop(cid, None)
+        except (OSError, asyncio.CancelledError):
+            return
+
+    async def stop_recorder(self, cid: str) -> None:
+        proc = self.recorders.pop(cid, None)
+        if proc and proc.returncode is None:
+            proc.send_signal(signal.SIGINT)
+            try:
+                await asyncio.wait_for(proc.wait(), 10)
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
+        task = self.progress_tasks.pop(cid, None)
+        if task:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        self.record_progress.pop(cid, None)
+        self.record_time.pop(cid, None)
+
+    async def stop_all_recorders(self) -> None:
+        for cid in list(self.recorders):
+            await self.stop_recorder(cid)
+
+    async def record_loop(self) -> None:
+        while True:
+            try:
+                if self.relay and self.relay.returncode is not None:
+                    await self.stop_all_recorders()
+                    if time.monotonic() >= self.relay_retry_at:
+                        print("EAC Vision: motore video terminato; riavvio tra i tentativi", flush=True)
+                        self.relay_retry_at = time.monotonic() + 30
+                        await self.start_relay()
+                root = self.storage_root()
+                available_mb = memory_available_mb()
+                if available_mb is not None and available_mb < 256 and not self.memory_paused:
+                    self.memory_paused = True
+                    print("EAC Vision: memoria bassa; sospendo temporaneamente le registrazioni", flush=True)
+                elif self.memory_paused and available_mb is not None and available_mb > 512:
+                    self.memory_paused = False
+                    print("EAC Vision: memoria recuperata; riprendo le registrazioni", flush=True)
+                enabled = self.configured()[:MAX_CAMERAS]
+                allowed = {cid for cid, cam in enabled if root and not self.memory_paused and self.relay and self.relay.returncode is None
+                           and (cam.get("mode") == "continuous" or (cam.get("mode") == "motion" and self.motion_active(cid, cam)))}
+                for cid, proc in list(self.recorders.items()):
+                    if proc.returncode is not None:
+                        await self.stop_recorder(cid)
+                        self.record_errors[cid] = "Stream interrotto: nuovo tentativo"
+                        self.retry_at[cid] = time.monotonic() + 20
+                    elif cid in allowed and time.monotonic() - self.record_progress.get(cid, 0) > 45:
+                        await self.stop_recorder(cid)
+                        self.record_errors[cid] = "Stream bloccato: nuovo tentativo"
+                        self.retry_at[cid] = time.monotonic() + 15
+                        print("EAC Vision: riavvio registrazione bloccata " + cid, flush=True)
+                    elif cid not in allowed:
+                        await self.stop_recorder(cid)
+                for cid in allowed:
+                    if cid not in self.recorders and time.monotonic() >= self.retry_at.get(cid, 0):
+                        await self.start_recorder(cid, root)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                # Isolate a bad camera or a disconnected NAS from the rest of Home Assistant.
+                detail = type(exc).__name__ + ": " + str(exc)
+                if detail != self.last_loop_error:
+                    self.last_loop_error = detail
+                    print("EAC Vision: controllo registrazione: " + detail, flush=True)
+            await asyncio.sleep(5)
+
+    def recording_files(self, cid: str, day: str = "") -> list[Path]:
+        root = self.storage_root(require_space=False)
+        if cid not in self.config["cameras"] or not root:
+            return []
+        folder = root / cid
+        if not folder.is_dir() or folder.is_symlink():
+            return []
+        return sorted((p for p in folder.iterdir() if p.is_file() and not p.is_symlink() and FILE_RE.fullmatch(p.name)
+                       and (not day or p.name.startswith(day))), key=lambda p: p.name)
+
+    def segments(self, cid: str, day: str = "") -> list[dict]:
+        files = self.recording_files(cid, day)
+        # The MP4 currently written by ffmpeg has no final index yet and is not playable.
+        if cid in self.recorders and files:
+            files = files[:-1]
+        result = []
+        for idx, path in enumerate(files):
+            try:
+                start = datetime.strptime(path.stem, "%Y-%m-%d_%H-%M-%S").timestamp()
+                next_start = (datetime.strptime(files[idx + 1].stem, "%Y-%m-%d_%H-%M-%S").timestamp()
+                              if idx + 1 < len(files) else path.stat().st_mtime)
+                dur = max(1, min(300, next_start - start))
+                result.append({"start": start, "dur": dur, "name": path.name,
+                               "url": "/eacnvr/file?cam=" + cid + "&name=" + path.name, "live": False})
+            except (OSError, ValueError):
+                continue
+        return result
+
+    def days(self, cid: str) -> list[dict]:
+        return [{"day": day} for day in sorted({p.name[:10] for p in self.recording_files(cid)}, reverse=True)]
+
+    async def cleanup_loop(self) -> None:
+        while True:
+            await asyncio.sleep(3600)
+            root = self.storage_root(require_space=False)
+            if not root:
+                continue
+            files = [p for cid in self.config["cameras"] for p in self.recording_files(cid)]
+            files.sort(key=lambda p: p.name)
+            cutoff = time.time() - int(self.config.get("retention_days", 7)) * 86400
+            active = set()
+            for cid in self.recorders:
+                owned = self.recording_files(cid)
+                if owned:
+                    active.add(owned[-1])
+            total = sum(p.stat().st_size for p in files)
+            limit = int(self.config.get("max_gb", 0)) * 1024**3
+            for path in files:
+                try:
+                    if path in active:
+                        continue
+                    if path.stat().st_mtime < cutoff or (limit and total > limit):
+                        size = path.stat().st_size
+                        path.unlink()
+                        total -= size
+                except OSError:
+                    continue
+
+    def public_camera(self, cid: str, cam: dict) -> dict:
+        return {"id": cid, "entity_id": cam.get("entity_id", ""), "name": cam.get("name", cid),
+                "has_source": valid_source(cam.get("source", "")), "mode": cam.get("mode", "off"),
+                "motion_entity": cam.get("motion_entity", ""), "motion": self.states.get(cam.get("motion_entity", ""), {}).get("state") == "on",
+                "recording": cid in self.recorders and self.recorders[cid].returncode is None,
+                "record_error": self.record_errors.get(cid, ""),
+                "selected": cid in self.config["selected"]}
+
+    def status(self, include_key: bool = False) -> dict:
+        cams = [self.public_camera(cid, cam) for cid, cam in self.config["cameras"].items()
+                if any(d["id"] == cid for d in self.discovered)]
+        result = {"name": "EAC Vision Pi 4", "ha_error": self.ha_error, "cameras": cams,
+                  "storage": self.storage_status(), "relay": bool(self.relay and self.relay.returncode is None),
+                  "ffmpeg": Path(FFMPEG).exists(),
+                  "memory_available_mb": memory_available_mb(), "memory_paused": self.memory_paused,
+                  "max_cameras": MAX_CAMERAS, "retention_days": self.config["retention_days"], "max_gb": self.config["max_gb"]}
+        if include_key:
+            result["client_key"] = self.client_key
+        return result

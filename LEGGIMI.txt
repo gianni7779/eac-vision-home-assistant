@@ -1,0 +1,75 @@
+EAC VISION PER RASPBERRY PI 4 IN HOME ASSISTANT
+=============================================
+
+Questa cartella contiene una app di Home Assistant OS. Puoi provarla
+prima su un mini PC x64 con Home Assistant OS e poi sul Raspberry Pi 4 a 64 bit.
+Non serve Frigate e non usa AI. Home Assistant Container non dispone dello
+store delle App.
+
+INSTALLAZIONE
+1. Serve Home Assistant OS sul Raspberry Pi 4 a 64 bit o sul mini PC x64.
+2. Apri Impostazioni > App > Installa app. Dal menu in alto a destra scegli
+   Repository e incolla questo link:
+   https://github.com/gianni7779/eac-vision-home-assistant
+3. Premi Aggiungi. Cerca "EAC Vision Pi 4" nello Store, installa, avvia e
+   apri la UI.
+   Il primo avvio compila l'immagine. I binari go2rtc v1.9.15 per ARM sono
+   già inclusi nel progetto per ARM64 e x64 e verificati con hash SHA-256.
+
+TELECAMERE
+1. In Home Assistant aggiungi prima le telecamere con l'integrazione ONVIF.
+2. Apri EAC Vision Pi 4 > Impostazioni. Le entità camera ONVIF appaiono da sole.
+3. Per ogni camera premi Configura e inserisci una volta l'indirizzo diretto:
+   onvif://utente:password@192.168.1.50:80
+   oppure rtsp://utente:password@192.168.1.50:554/percorso
+   Se serve un altro profilo ONVIF aggiungi ?subtype=NOME_PROFILO.
+   Imposta il video della telecamera su H.264 per compatibilità con browser e TV.
+4. La registrazione continua 24 ore su 24 è preimpostata per ogni telecamera
+   che colleghi. Puoi spegnerla manualmente dalle impostazioni della camera.
+5. Spunta "Mostra nella vista Principale" per la dashboard e i client.
+
+DISCO O NAS
+1. Home Assistant > Impostazioni > Sistema > Archiviazione > Aggiungi spazio di
+   archiviazione. Scegli SMB/CIFS o NFS e uso "Media". Per un HDD presso il modem,
+   usa la condivisione SMB del modem se disponibile.
+2. Il NAS comparirà come /media/NOME_SCEGLIUTO. Inserisci questo percorso esatto
+   nelle impostazioni di EAC Vision e premi "Salva archivio".
+3. Quando l'archivio è pronto, le telecamere configurate iniziano a registrare
+   sempre, anche se nessuno guarda il live. I file MP4 da circa 5 minuti
+   vengono salvati sul NAS e presentati ordinati nell'interfaccia.
+   In questa versione i file registrati contengono il video, senza audio.
+4. Puoi impostare giorni di conservazione e limite di spazio. Con meno di 2 GB
+   liberi o se il NAS non risponde, nuove registrazioni vengono fermate.
+
+PC, TV E TELEFONO
+In Impostazioni EAC Vision Pi 4 copia il codice client. Nell'app EAC Vision
+scegli "Collega EAC Vision NVR" e inserisci IP locale del Raspberry, porta 8766
+e codice. PC e TV LG/Samsung importano la vista Principale; su Android
+aggiungi le telecamere importate alla vista con il comando "Vista +".
+Le registrazioni si possono aprire da tutti questi client.
+Non aprire la porta 8766 su Internet.
+
+PROVA PRIMA SUL MINI PC
+Se nel mini PC trovi Impostazioni > App > Store, puoi installare questa stessa
+cartella locale. Collega il NAS, configura una camera, verifica live e file MP4,
+poi passa alle tue 8 camere e lasciale registrare H24 per almeno un giorno.
+Controlla il registro dell'app, spazio libero, memoria e temperatura. Se il
+vecchio registratore resta acceso, le camere e il NAS ricevono due richieste
+di video: tienine conto durante la prova. Sul Raspberry userai lo stesso
+pacchetto, ma dovrai configurare di nuovo le telecamere se non trasferisci
+i dati dell'app.
+
+LIMITI E VERIFICA
+- Massimo configurabile: 16 telecamere. La dashboard apre 4 live per impostazione
+  iniziale; puoi scegliere 8 o 16 se il dispositivo che guarda regge i decoder.
+- Il Raspberry inoltra i video e registra con copia del flusso: non ricodifica e
+  non fa AI. La capacità reale dipende da bitrate, rete, modello/RAM e velocità
+  del disco/NAS. 16 telecamere non sono garantite senza prova sul tuo impianto.
+- L'app è pronta come progetto locale, ma non è stata installata sul tuo Raspberry:
+  qui non ho accesso al dispositivo. Le API sono state provate in locale; il
+  container ARM/x64 e il live reale vanno verificati sul tuo Home Assistant.
+- Se un flusso smette di avanzare per 45 secondi, il registratore lo riavvia.
+  Se il Pi ha meno di 256 MB di memoria libera sospende la registrazione e la
+  riprende oltre 512 MB. Il watchdog di Home Assistant sorveglia il servizio.
+
+Documentazione: eac_vision_pi4/DOCS.md
