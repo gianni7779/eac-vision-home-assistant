@@ -5,6 +5,7 @@ const base = location.pathname.endsWith('/') ? location.pathname : location.path
 const apiUrl = path => base + path;
 let state = null, page = 'live', players = [], visibleIds = '', selectedCam = null, toastTimer = 0, hideTimer = 0, storageDirty = false;
 let recordingSegments = [], recordingIndex = -1, pendingSeek = 0, recordingLoad = 0;
+let previewIndex = -1, previewOffset = 0, previewLast = 0, previewDragging = false, previewSecond = 0, skipTimelineClick = false;
 let detailCamId = null, detailPlayer = null, detailCams = [], detailAudioAvailable = false, detailAudioChecked = false, detailAudioOn = false, preferredRecordingCam = null;
 let budget = Number(localStorage.getItem('eac-live-budget') || '4');
 if (![4, 8, 16].includes(budget)) budget = 4;
@@ -221,6 +222,7 @@ async function update() {
   try {
     const firstLoad=!state;
     state=await request('api/status');
+    document.body.classList.toggle('hide-camera-name',state.show_names===false);
     $('ha-dot').classList.toggle('ok',!state.ha_error);
     $('ha-label').textContent=state.ha_error?'Home Assistant non disponibile':'Home Assistant collegato';
     if(page==='settings')renderSettings();
@@ -241,6 +243,10 @@ function renderSettings() {
   $('metric-storage-detail').textContent=state.storage.ready?`${state.storage.free_gb} GB liberi`:state.storage.message;
   $('metric-memory').textContent=state.memory_available_mb==null?'—':Math.round(state.memory_available_mb)+' MB';
   $('metric-memory-detail').textContent=state.memory_paused?'Registrazione sospesa per memoria bassa':'Memoria disponibile sul dispositivo';
+  $('metric-app-disk').textContent=state.storage.used_gb==null?'—':state.storage.used_gb+' GB';
+  $('metric-app-disk-detail').textContent=state.storage.total_gb==null?'Solo registrazioni':`Disco ${state.storage.total_gb} GB · riserva ${state.storage.reserve_gb} GB`;
+  $('metric-app-ram').textContent=state.app_memory_mb==null?'—':state.app_memory_mb+' MB';
+  $('metric-app-cpu').textContent=state.app_cpu_percent==null?'—':state.app_cpu_percent+'%';
   $('app-version').textContent=`${state.name} · versione ${state.version}`;
   const list=$('camera-list');list.replaceChildren();
   if(!state.cameras.length){const p=document.createElement('p');p.className='muted';p.style.gridColumn='1 / -1';p.textContent='Nessuna telecamera ONVIF trovata. Aggiungila prima in Impostazioni → Dispositivi e servizi di Home Assistant.';list.append(p)}
@@ -257,9 +263,10 @@ function renderSettings() {
   }
   if(!storageDirty){$('storage-path').value=state.storage.path||'';$('retention-days').value=state.retention_days;$('max-gb').value=state.max_gb}
   $('storage-pill').textContent=state.storage.ready?'● Disco pronto':'● Disco non pronto';$('storage-pill').classList.toggle('ok',state.storage.ready);
-  $('storage-message').textContent=state.storage.ready?`Spazio libero: ${state.storage.free_gb} GB`:state.storage.message;
+  $('storage-message').textContent=state.storage.ready?`Spazio libero: ${state.storage.free_gb} GB · usato dalle registrazioni: ${state.storage.used_gb} GB`:state.storage.message;
   $('client-key').textContent=state.client_key;
   $('settings-live-budget').value=String(budget);
+  $('show-camera-names').checked=state.show_names!==false;
 }
 function openCamera(cam) {
   selectedCam=cam;$('dialog-title').textContent=cam.name;$('dialog-entity').textContent=cam.entity_id;
@@ -287,6 +294,7 @@ function clockText(seconds, withSeconds=false) {
   return String(Math.floor(value/3600)).padStart(2,'0')+':'+String(Math.floor(value%3600/60)).padStart(2,'0')+(withSeconds?':'+String(value%60).padStart(2,'0'):'');
 }
 function stopRecordingPlayback() {
+  hideRecordingPreview();
   const video=$('playback'); video.pause(); video.removeAttribute('src'); video.load(); video.hidden=true;
   $('player-empty').hidden=false;
   $('player-empty').querySelector('strong').textContent='Pronto per la riproduzione';
@@ -361,6 +369,35 @@ function seekRecording(seconds) {
   if(index<0)index=recordingSegments.length-1;
   const start=clipClock(recordingSegments[index]);
   playRecording(index,target>=start&&target<start+recordingSegments[index].dur?target-start:0);
+}
+function hideRecordingPreview(){
+  const preview=$('timeline-preview'),video=$('timeline-preview-video');
+  preview.hidden=true;previewIndex=-1;video.pause();video.removeAttribute('src');video.load();
+}
+function previewRecording(seconds){
+  if(!recordingSegments.length)return;
+  previewSecond=Math.max(0,Math.min(86399,seconds));
+  const preview=$('timeline-preview'),video=$('timeline-preview-video');
+  preview.hidden=false;preview.style.left=Math.max(9,Math.min(91,previewSecond/86400*100))+'%';
+  $('timeline-preview-clock').textContent=clockText(previewSecond,true);
+  let index=recordingSegments.findIndex(s=>clipClock(s)<=previewSecond&&previewSecond<clipClock(s)+s.dur);
+  if(index<0)index=recordingSegments.findIndex(s=>clipClock(s)>previewSecond);
+  if(index<0)index=recordingSegments.length-1;
+  const segment=recordingSegments[index];
+  previewOffset=Math.max(0,Math.min(previewSecond-clipClock(segment),segment.dur-.1));
+  if(previewIndex===index){
+    if(Date.now()-previewLast>=140&&video.readyState>=1&&Math.abs(video.currentTime-previewOffset)>.3){
+      previewLast=Date.now();try{video.currentTime=previewOffset}catch{}
+    }
+    return;
+  }
+  previewIndex=index;previewLast=Date.now();
+  video.src=apiUrl('api/recording/'+encodeURIComponent($('record-cam').value)+'/'+encodeURIComponent(segment.name));
+  video.load();
+}
+function timelineSecond(event){
+  const rect=$('record-timeline').getBoundingClientRect();
+  return Math.max(0,Math.min(86399,(event.clientX-rect.left)/rect.width*86400));
 }
 async function loadRecordings() {
   if(!state)return;
@@ -440,14 +477,45 @@ $('dialog-close').addEventListener('click',()=>$('camera-dialog').close());
 $('storage-form').addEventListener('submit',saveStorage);
 for(const id of ['storage-path','retention-days','max-gb'])$(id).addEventListener('input',()=>{storageDirty=true});
 $('copy-key').addEventListener('click',async()=>{try{await navigator.clipboard.writeText(state.client_key);toast('Codice copiato')}catch{toast('Seleziona e copia il codice mostrato')}});
+$('key-form').addEventListener('submit',async event=>{
+  event.preventDefault();
+  const key=$('new-client-key').value.trim();
+  try{await request('api/client-key',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key})});$('new-client-key').value='';toast('Codice aggiornato: riconnetti le app già collegate');await update()}
+  catch(error){toast(error.message)}
+});
+$('generate-client-key').addEventListener('click',()=>{
+  const bytes=new Uint8Array(12);crypto.getRandomValues(bytes);
+  $('new-client-key').value=Array.from(bytes,b=>b.toString(16).padStart(2,'0')).join('').slice(0,16);
+  $('new-client-key').focus();
+});
+$('show-camera-names').addEventListener('change',async event=>{
+  try{await request('api/view',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({show_names:event.target.checked})});await update();toast('Vista aggiornata')}
+  catch(error){event.target.checked=!event.target.checked;toast(error.message)}
+});
 $('record-cam').addEventListener('change',loadRecordings);$('record-day').addEventListener('change',loadSegments);$('record-refresh').addEventListener('click',loadRecordings);
 for(const [id,step] of [['record-prev',1],['record-next',-1]])$(id).addEventListener('click',()=>{
   const select=$('record-day'),next=select.selectedIndex+step;
   if(next>=0&&next<select.options.length){select.selectedIndex=next;loadSegments()}
 });
+$('timeline-preview-video').addEventListener('loadedmetadata',()=>{try{$('timeline-preview-video').currentTime=previewOffset}catch{}});
+$('record-timeline').addEventListener('pointerdown',event=>{
+  if(event.button!==0)return;
+  previewDragging=true;previewRecording(timelineSecond(event));
+  event.currentTarget.setPointerCapture(event.pointerId);event.preventDefault();
+});
+$('record-timeline').addEventListener('pointermove',event=>{
+  if(previewDragging||event.pointerType==='mouse')previewRecording(timelineSecond(event));
+});
+$('record-timeline').addEventListener('pointerup',event=>{
+  if(!previewDragging)return;
+  previewDragging=false;previewRecording(timelineSecond(event));
+  const target=previewSecond;hideRecordingPreview();seekRecording(target);skipTimelineClick=true;
+});
+$('record-timeline').addEventListener('pointercancel',()=>{previewDragging=false;hideRecordingPreview()});
+$('record-timeline').addEventListener('pointerleave',()=>{if(!previewDragging)hideRecordingPreview()});
 $('record-timeline').addEventListener('click',event=>{
-  const rect=event.currentTarget.getBoundingClientRect();
-  seekRecording((event.clientX-rect.left)/rect.width*86400);
+  if(skipTimelineClick){skipTimelineClick=false;return}
+  seekRecording(timelineSecond(event));
 });
 $('record-timeline').addEventListener('keydown',event=>{
   const current=recordingIndex<0?0:clipClock(recordingSegments[recordingIndex])+$('playback').currentTime;

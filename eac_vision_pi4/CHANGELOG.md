@@ -1,5 +1,14 @@
 # Novità
 
+## 0.5.0
+
+- Conservazione iniziale di 3 giorni, pulizia ogni 5 minuti e cancellazione dei video più vecchi quando l'archivio raggiunge il limite o scende sotto la riserva di spazio libero.
+- Impostazioni con spazio occupato dalle registrazioni, memoria e CPU usate dal servizio.
+- Codice client breve generato automaticamente o personalizzabile (12-64 caratteri).
+- Interruttore per nascondere il nome delle telecamere nella griglia live.
+- Anteprima video con orario durante il trascinamento della timeline delle registrazioni; il lettore principale passa alla nuova ora quando rilasci.
+- Live HLS/fMP4 protetto dal codice client per il lettore iPhone.
+
 ## 0.4.0
 
 - Griglia live senza ritaglio o deformazioni: il fotogramma completo conserva le proporzioni originali. Le righe incomplete restano centrate e i riquadri hanno dimensioni uniformi.

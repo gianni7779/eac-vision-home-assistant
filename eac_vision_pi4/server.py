@@ -7,7 +7,7 @@ import re
 import secrets
 import signal
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 import aiohttp
 from aiohttp import WSMsgType, web
@@ -125,6 +125,25 @@ async def set_storage(request: web.Request) -> web.Response:
     return web.json_response(v.storage_status())
 
 
+async def set_client_key(request: web.Request) -> web.Response:
+    body = await request.json()
+    try:
+        vision(request).set_client_key(str(body.get("key", "")).strip())
+    except ValueError as exc:
+        raise web.HTTPBadRequest(text=str(exc)) from exc
+    return web.json_response({"client_key": vision(request).client_key})
+
+
+async def set_view(request: web.Request) -> web.Response:
+    body = await request.json()
+    if not isinstance(body.get("show_names"), bool):
+        raise web.HTTPBadRequest(text="Scelta della vista non valida")
+    v = vision(request)
+    v.config["show_names"] = body["show_names"]
+    v.save()
+    return web.json_response({"show_names": v.config["show_names"]})
+
+
 async def snapshot(request: web.Request) -> web.Response:
     cid = cid_of(request)
     v = vision(request)
@@ -210,7 +229,48 @@ async def recording_days(request: web.Request) -> web.Response:
 
 
 async def nvr_info(_: web.Request) -> web.Response:
-    return web.json_response({"app": "EAC Vision NVR", "name": APP_NAME, "port": 8766, "version": APP_VERSION})
+    return web.json_response({"app": "EAC Vision NVR", "name": APP_NAME, "port": 8766, "version": APP_VERSION, "hls": True})
+
+
+def rewrite_hls_playlist(source: str, key: str) -> str:
+    suffix = "&key=" + quote(key, safe="")
+    source = re.sub(r'URI="([^"]+\?[^\"]+)"', lambda match: 'URI="' + match.group(1) + suffix + '"', source)
+    return re.sub(r'(?m)^([^#\r\n][^\r\n]*\?[^\r\n]+)$', lambda match: match.group(1) + suffix, source)
+
+
+async def hls(request: web.Request) -> web.Response:
+    v = vision(request)
+    if not v.relay or v.relay.returncode is not None:
+        raise web.HTTPBadGateway(text="Motore video non disponibile")
+    asset = request.match_info.get("asset", "")
+    if asset:
+        if asset not in {"playlist.m3u8", "segment.ts", "init.mp4", "segment.m4s"}:
+            raise web.HTTPNotFound()
+        session_id = request.query.get("id", "")
+        if not re.fullmatch(r"[A-Za-z0-9]{8}", session_id):
+            raise web.HTTPBadRequest(text="Sessione HLS non valida")
+        query = {"id": session_id}
+        if asset.startswith("segment") and request.query.get("n", "").isdigit():
+            query["n"] = request.query["n"]
+        upstream_path = "/api/hls/" + asset + "?" + urlencode(query)
+    else:
+        cid = request.query.get("src", "")
+        if cid not in v.sources:
+            raise web.HTTPNotFound(text="Telecamera non trovata")
+        upstream_path = "/api/stream.m3u8?" + urlencode({"src": cid}) + "&mp4"
+    assert v.session
+    try:
+        async with v.session.get(GO_API + upstream_path) as upstream:
+            if upstream.status != 200:
+                raise web.HTTPBadGateway(text="HLS non disponibile")
+            data = await upstream.read()
+            if len(data) > 16 * 1024 * 1024:
+                raise web.HTTPBadGateway(text="Risposta HLS troppo grande")
+            if not asset or asset.endswith(".m3u8"):
+                data = rewrite_hls_playlist(data.decode("utf-8"), v.client_key).encode("utf-8")
+            return web.Response(body=data, headers={"Content-Type": upstream.headers.get("Content-Type", "application/octet-stream")})
+    except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+        raise web.HTTPBadGateway(text="HLS non raggiungibile") from exc
 
 
 async def nvr_cameras(request: web.Request) -> web.Response:
@@ -265,6 +325,8 @@ def make_ingress(v: Vision) -> web.Application:
     app.router.add_post("/api/refresh", refresh)
     app.router.add_post("/api/cameras/{cid}", set_camera)
     app.router.add_post("/api/storage", set_storage)
+    app.router.add_post("/api/client-key", set_client_key)
+    app.router.add_post("/api/view", set_view)
     app.router.add_get("/api/snapshot/{cid}", snapshot)
     app.router.add_get("/api/live/{cid}", relay_live)
     app.router.add_get("/api/recordings/{cid}", recordings)
@@ -280,6 +342,8 @@ def make_lan(v: Vision) -> web.Application:
     app.router.add_get("/eacnvr/cameras", nvr_cameras)
     app.router.add_get("/eacnvr/views", nvr_views)
     app.router.add_get("/eacnvr/live", relay_live)
+    app.router.add_get("/eacnvr/hls.m3u8", hls)
+    app.router.add_get("/eacnvr/hls/{asset}", hls)
     app.router.add_get("/eacnvr/snapshot", snapshot)
     app.router.add_get("/eacnvr/days", nvr_days)
     app.router.add_get("/eacnvr/segments", nvr_segments)

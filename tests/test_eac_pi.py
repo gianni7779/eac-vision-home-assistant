@@ -80,7 +80,7 @@ class VisionTest(unittest.IsolatedAsyncioTestCase):
         info = await response.json()
         self.assertEqual(info["app"], "EAC Vision NVR")
         self.assertEqual(info["name"], "EAC Vision Home Assistant")
-        self.assertEqual(info["version"], "0.4.0")
+        self.assertEqual(info["version"], "0.5.0")
         denied = await self.lan.get("/eacnvr/cameras", headers={"Origin": "http://localhost"})
         self.assertEqual(denied.status, 403)
         self.assertEqual(denied.headers.get("Access-Control-Allow-Origin"), "*")
@@ -133,6 +133,43 @@ class VisionTest(unittest.IsolatedAsyncioTestCase):
         migrated = core.Vision()
         self.assertEqual(migrated.config["cameras"][cid]["mode"], "continuous")
         self.assertNotIn("source", migrated.config["cameras"][cid])
+
+    async def test_client_key_and_live_names(self):
+        self.assertEqual(self.vision.config["retention_days"], 3)
+        old = self.vision.client_key
+        invalid = await self.ingress.post("/api/client-key", json={"key": "abc"})
+        self.assertEqual(invalid.status, 400)
+        self.assertEqual(self.vision.client_key, old)
+        changed = await self.ingress.post("/api/client-key", json={"key": "MioCodice-1234"})
+        self.assertEqual(changed.status, 200)
+        self.assertEqual(self.vision.secret_path.read_text(), "MioCodice-1234")
+        self.assertEqual((await self.lan.get("/eacnvr/cameras?key=" + old)).status, 403)
+        self.assertEqual((await self.lan.get("/eacnvr/cameras?key=MioCodice-1234")).status, 200)
+        self.assertEqual((await self.ingress.post("/api/view", json={"show_names": False})).status, 200)
+        self.assertFalse((await (await self.ingress.get("/api/status")).json())["show_names"])
+        self.assertFalse(core.Vision().config["show_names"])
+
+    async def test_hls_playlist_keeps_client_auth_on_all_parts(self):
+        playlist = '#EXTM3U\nhls/playlist.m3u8?id=ABCDEFGH\n#EXT-X-MAP:URI="init.mp4?id=ABCDEFGH"\nsegment.m4s?id=ABCDEFGH&n=1'
+        result = server.rewrite_hls_playlist(playlist, "a-b_12345678")
+        self.assertIn('hls/playlist.m3u8?id=ABCDEFGH&key=a-b_12345678', result)
+        self.assertIn('URI="init.mp4?id=ABCDEFGH&key=a-b_12345678"', result)
+        self.assertIn('segment.m4s?id=ABCDEFGH&n=1&key=a-b_12345678', result)
+        denied = await self.lan.get('/eacnvr/hls.m3u8?src=' + self.cid)
+        self.assertEqual(denied.status, 403)
+
+    async def test_cleanup_removes_expired_recording(self):
+        self.vision.set_storage(str(core.MEDIA / "nas"), 3, 0)
+        folder = core.MEDIA / "nas" / self.cid
+        folder.mkdir()
+        old = folder / "2026-11-19_12-00-00.mp4"
+        new = folder / "2026-11-24_12-00-00.mp4"
+        old.write_bytes(b"old")
+        new.write_bytes(b"new")
+        os.utime(old, (time.time() - 4 * 86400, time.time() - 4 * 86400))
+        self.vision.cleanup_recordings()
+        self.assertFalse(old.exists())
+        self.assertTrue(new.exists())
 
     async def test_onvif_changes_are_detected_without_saving_credentials(self):
         self.entry["data"]["password"] = "updated"

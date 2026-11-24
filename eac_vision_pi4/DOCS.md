@@ -31,6 +31,8 @@ La porta locale **8766** espone l'API EAC Vision NVR. Nei client PC/TV/telefono 
 
 ## Capacità
 
+Le nuove installazioni conservano inizialmente 3 giorni di video. La pulizia controlla l'archivio ogni 5 minuti e cancella prima i segmenti più vecchi, escluso quello in scrittura. Anche senza un limite GB personalizzato, l'app limita le proprie registrazioni all'80% della capacità totale e tenta di lasciare libero almeno il 5% del disco (minimo 2 GB). La conservazione impostata in precedenza non viene cambiata durante un aggiornamento; puoi scegliere 3 giorni nelle Impostazioni. Lo spazio usato, la memoria e la CPU dell'app sono visibili lì. Il codice per i client può essere sostituito con uno di 12-64 caratteri; i client già collegati vanno aggiornati dopo il cambio. Nelle impostazioni della vista puoi nascondere i nomi delle camere nel live.
+
 Il limite software è 16 camere configurate. La dashboard mostra tutte quelle selezionate e apre 4 live per impostazione iniziale, con scelta di 8 o 16. Il Raspberry non decodifica i live: lo fanno i dispositivi che guardano. Il risultato reale dipende da bitrate, Wi-Fi/Ethernet e velocità del NAS. Per stabilire quanti flussi regge **il tuo** Raspberry servono una prova con le 8 camere attuali, temperatura, memoria e registri durante la registrazione.
 
 ## Problemi comuni

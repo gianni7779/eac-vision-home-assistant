@@ -28,7 +28,7 @@ GO_API = "http://127.0.0.1:11984"
 GO_RTSP = "rtsp://127.0.0.1:18554"
 MAX_CAMERAS = 16
 APP_NAME = "EAC Vision Home Assistant"
-APP_VERSION = "0.4.0"
+APP_VERSION = "0.5.0"
 FILE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}\.mp4$")
 
 
@@ -99,6 +99,23 @@ def memory_available_mb() -> int | None:
     return None
 
 
+def container_resources() -> dict:
+    """Current cgroup usage; CPU percentage is one-core equivalent."""
+    result = {"memory_mb": None, "cpu_usec": None}
+    try:
+        result["memory_mb"] = round(int(Path("/sys/fs/cgroup/memory.current").read_text()) / 1024**2)
+    except (OSError, ValueError):
+        pass
+    try:
+        for line in Path("/sys/fs/cgroup/cpu.stat").read_text().splitlines():
+            if line.startswith("usage_usec "):
+                result["cpu_usec"] = int(line.split()[1])
+                break
+    except (OSError, ValueError, IndexError):
+        pass
+    return result
+
+
 class Vision:
     def __init__(self):
         DATA.mkdir(parents=True, exist_ok=True)
@@ -111,7 +128,8 @@ class Vision:
         self.config.setdefault("storage_path", "")
         self.config.setdefault("storage_id", "")
         self.config.setdefault("selected", [])
-        self.config.setdefault("retention_days", 7)
+        self.config.setdefault("show_names", True)
+        self.config.setdefault("retention_days", 3)
         self.config.setdefault("max_gb", 0)
         if self.config.get("record_policy") != "h24":
             for cam in self.config["cameras"].values():
@@ -127,7 +145,7 @@ class Vision:
             self.save()
         self.secret_path = DATA / "client_key"
         if not self.secret_path.exists():
-            self.secret_path.write_text(secrets.token_urlsafe(32), encoding="ascii")
+            self.secret_path.write_text(secrets.token_urlsafe(12), encoding="ascii")
             os.chmod(self.secret_path, 0o600)
         self.client_key = self.secret_path.read_text(encoding="ascii").strip()
         self.token = os.environ.get("SUPERVISOR_TOKEN", "")
@@ -150,6 +168,25 @@ class Vision:
         self.motion_until: dict[str, float] = {}
         self.memory_paused = False
         self.tasks: list[asyncio.Task] = []
+        self._usage_at = 0.0
+        self._usage_bytes = 0
+        self._cpu_sample: tuple[float, int] | None = None
+
+    def set_client_key(self, value: str) -> None:
+        if not re.fullmatch(r"[A-Za-z0-9_-]{12,64}", value):
+            raise ValueError("Il codice deve avere 12-64 caratteri: lettere, numeri, - o _")
+        tmp = self.secret_path.with_suffix(".tmp")
+        tmp.write_text(value, encoding="ascii")
+        os.chmod(tmp, 0o600)
+        tmp.replace(self.secret_path)
+        self.client_key = value
+
+    def usage_bytes(self) -> int:
+        if time.monotonic() - self._usage_at > 60:
+            self._usage_bytes = sum(p.stat().st_size for cid in self.config["cameras"]
+                                    for p in self.recording_files(cid))
+            self._usage_at = time.monotonic()
+        return self._usage_bytes
 
     def save(self) -> None:
         atomic_json(self.config_path, self.config)
@@ -354,11 +391,17 @@ class Vision:
 
     def storage_status(self) -> dict:
         raw = self.config.get("storage_path", "")
+        root = self.storage_root(require_space=False)
         valid = self.storage_root()
-        free_gb = None
-        if valid:
-            free_gb = round(shutil.disk_usage(valid).free / 1024**3, 1)
-        return {"path": raw, "ready": bool(valid), "free_gb": free_gb,
+        disk = shutil.disk_usage(root) if root else None
+        try:
+            used_gb = round(self.usage_bytes() / 1024**3, 2) if root else None
+        except OSError:
+            used_gb = None
+        reserve = max(2 * 1024**3, int(disk.total * .05)) if disk else 0
+        return {"path": raw, "ready": bool(valid), "free_gb": round(disk.free / 1024**3, 1) if disk else None,
+                "total_gb": round(disk.total / 1024**3, 1) if disk else None, "used_gb": used_gb,
+                "reserve_gb": round(reserve / 1024**3, 1) if disk else None,
                 "message": "Pronto" if valid else "Scegli un disco/NAS in /media e verifica almeno 2 GB liberi"}
 
     def set_storage(self, raw: str, retention_days: int, max_gb: int) -> None:
@@ -529,30 +572,43 @@ class Vision:
 
     async def cleanup_loop(self) -> None:
         while True:
-            await asyncio.sleep(3600)
-            root = self.storage_root(require_space=False)
-            if not root:
-                continue
-            files = [p for cid in self.config["cameras"] for p in self.recording_files(cid)]
-            files.sort(key=lambda p: p.name)
-            cutoff = time.time() - int(self.config.get("retention_days", 7)) * 86400
-            active = set()
-            for cid in self.recorders:
-                owned = self.recording_files(cid)
-                if owned:
-                    active.add(owned[-1])
-            total = sum(p.stat().st_size for p in files)
-            limit = int(self.config.get("max_gb", 0)) * 1024**3
-            for path in files:
-                try:
-                    if path in active:
-                        continue
-                    if path.stat().st_mtime < cutoff or (limit and total > limit):
-                        size = path.stat().st_size
-                        path.unlink()
-                        total -= size
-                except OSError:
+            try:
+                self.cleanup_recordings()
+            except OSError as exc:
+                print("EAC Vision: pulizia archivio: " + str(exc), flush=True)
+            await asyncio.sleep(300)
+
+    def cleanup_recordings(self) -> None:
+        root = self.storage_root(require_space=False)
+        if not root:
+            return
+        files = [p for cid in self.config["cameras"] for p in self.recording_files(cid)]
+        files.sort(key=lambda p: p.name)
+        cutoff = time.time() - int(self.config.get("retention_days", 3)) * 86400
+        active = set()
+        for cid in self.recorders:
+            owned = self.recording_files(cid)
+            if owned:
+                active.add(owned[-1])
+        total = sum(p.stat().st_size for p in files)
+        disk = shutil.disk_usage(root)
+        configured_limit = int(self.config.get("max_gb", 0)) * 1024**3
+        limit = configured_limit or int(disk.total * .8)
+        reserve = max(2 * 1024**3, int(disk.total * .05))
+        free = disk.free
+        for path in files:
+            try:
+                if path in active:
                     continue
+                if path.stat().st_mtime < cutoff or total > limit or free < reserve:
+                    size = path.stat().st_size
+                    path.unlink()
+                    total -= size
+                    free += size
+            except OSError:
+                continue
+        self._usage_bytes = total
+        self._usage_at = time.monotonic()
 
     def public_camera(self, cid: str, cam: dict) -> dict:
         return {"id": cid, "entity_id": cam.get("entity_id", ""), "name": cam.get("name", cid),
@@ -565,11 +621,22 @@ class Vision:
     def status(self, include_key: bool = False) -> dict:
         cams = [self.public_camera(cid, cam) for cid, cam in self.config["cameras"].items()
                 if any(d["id"] == cid for d in self.discovered)]
+        resources = container_resources()
+        cpu = None
+        if resources["cpu_usec"] is not None:
+            now = time.monotonic()
+            if self._cpu_sample:
+                elapsed = now - self._cpu_sample[0]
+                if elapsed > 0:
+                    cpu = round(max(0, (resources["cpu_usec"] - self._cpu_sample[1]) / (elapsed * 10000)), 1)
+            self._cpu_sample = (now, resources["cpu_usec"])
         result = {"name": APP_NAME, "version": APP_VERSION, "ha_error": self.ha_error, "source_error": self.source_error, "cameras": cams,
                   "storage": self.storage_status(), "relay": bool(self.relay and self.relay.returncode is None),
                   "ffmpeg": Path(FFMPEG).exists(),
                   "memory_available_mb": memory_available_mb(), "memory_paused": self.memory_paused,
-                  "max_cameras": MAX_CAMERAS, "retention_days": self.config["retention_days"], "max_gb": self.config["max_gb"]}
+                  "app_memory_mb": resources["memory_mb"], "app_cpu_percent": cpu,
+                  "max_cameras": MAX_CAMERAS, "retention_days": self.config["retention_days"], "max_gb": self.config["max_gb"],
+                  "show_names": self.config["show_names"]}
         if include_key:
             result["client_key"] = self.client_key
         return result
