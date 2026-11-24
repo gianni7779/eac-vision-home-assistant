@@ -1,5 +1,9 @@
 # Novità
 
+## 0.5.1
+
+- Aggiunto il flusso HLS/TS come alternativa al formato fMP4 per i client iPhone con camere H.264.
+
 ## 0.5.0
 
 - Conservazione iniziale di 3 giorni, pulizia ogni 5 minuti e cancellazione dei video più vecchi quando l'archivio raggiunge il limite o scende sotto la riserva di spazio libero.

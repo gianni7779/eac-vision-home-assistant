@@ -9,7 +9,7 @@ Repository per installare **EAC Vision Home Assistant** dallo Store delle App di
 3. Incolla `https://github.com/gianni7779/eac-vision-home-assistant` e premi **Aggiungi**.
 4. Cerca **EAC Vision Home Assistant** nello Store, poi installa e avvia l'app.
 
-Se l'hai già installata, apri la pagina dell'app nello Store, aggiorna il repository dal menu dello Store e premi **Aggiorna** quando compare la versione **0.5.0**. Le impostazioni dell'app restano nella cartella dati di Home Assistant.
+Se l'hai già installata, apri la pagina dell'app nello Store, aggiorna il repository dal menu dello Store e premi **Aggiorna** quando compare la versione **0.5.1**. Le impostazioni dell'app restano nella cartella dati di Home Assistant.
 
 Puoi anche aprire direttamente il [collegamento per aggiungere il repository](https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2Fgianni7779%2Feac-vision-home-assistant), scegliere il tuo Home Assistant e confermare l'aggiunta.
 
