@@ -11,7 +11,7 @@ import secrets
 import shutil
 import signal
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import quote, urlencode, urlsplit
 
@@ -28,7 +28,7 @@ GO_API = "http://127.0.0.1:11984"
 GO_RTSP = "rtsp://127.0.0.1:18554"
 MAX_CAMERAS = 16
 APP_NAME = "EAC Vision Home Assistant"
-APP_VERSION = "0.5.1"
+APP_VERSION = "0.5.2"
 FILE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}\.mp4$")
 
 
@@ -166,6 +166,7 @@ class Vision:
         self.relay_retry_at = 0.0
         self.last_loop_error = ""
         self.motion_until: dict[str, float] = {}
+        self.motion_events = DATA / "motion_events"
         self.memory_paused = False
         self.tasks: list[asyncio.Task] = []
         self._usage_at = 0.0
@@ -323,6 +324,10 @@ class Vision:
                             data = message.get("event", {}).get("data", {})
                             entity = data.get("entity_id")
                             if entity:
+                                old = data.get("old_state") or self.states.get(entity, {})
+                                new = data.get("new_state")
+                                if new and new.get("state") == "on" and old.get("state") != "on":
+                                    self.record_motion_event(entity)
                                 if data.get("new_state") is None:
                                     self.states.pop(entity, None)
                                 else:
@@ -338,6 +343,43 @@ class Vision:
 
     def configured(self) -> list[tuple[str, dict]]:
         return [(cid, cam) for cid, cam in self.config["cameras"].items() if cid in self.sources]
+
+    def record_motion_event(self, entity: str) -> None:
+        now = datetime.now()
+        for cid, cam in self.configured():
+            if cam.get("motion_entity") != entity:
+                continue
+            event = {"id": now.strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(4),
+                     "cam": cid, "camName": cam["name"], "label": "movimento", "score": 0,
+                     "start": int(now.timestamp() * 1000), "end": 0}
+            try:
+                self.motion_events.mkdir(parents=True, exist_ok=True)
+                with (self.motion_events / (now.strftime("%Y-%m-%d") + ".jsonl")).open("a", encoding="utf-8") as out:
+                    out.write(json.dumps(event, ensure_ascii=False) + "\n")
+            except OSError as exc:
+                print("EAC Vision: archivio movimenti: " + str(exc), flush=True)
+
+    def day_events(self, cid: str, day: str) -> list[dict]:
+        try:
+            if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+                raise ValueError
+            datetime.strptime(day, "%Y-%m-%d")
+        except ValueError as exc:
+            raise ValueError("Data eventi non valida") from exc
+        path = self.motion_events / (day + ".jsonl")
+        try:
+            with path.open(encoding="utf-8") as source:
+                events = []
+                for line in source:
+                    try:
+                        event = json.loads(line)
+                        if event.get("cam") == cid:
+                            events.append(event)
+                    except (ValueError, TypeError):
+                        continue
+                return events
+        except FileNotFoundError:
+            return []
 
     def relay_config(self) -> str:
         lines = ['api:', '  listen: "127.0.0.1:11984"', 'rtsp:', '  listen: "127.0.0.1:18554"',
@@ -574,9 +616,19 @@ class Vision:
         while True:
             try:
                 self.cleanup_recordings()
+                self.cleanup_motion_events()
             except OSError as exc:
                 print("EAC Vision: pulizia archivio: " + str(exc), flush=True)
             await asyncio.sleep(300)
+
+    def cleanup_motion_events(self) -> None:
+        cutoff = datetime.now().date() - timedelta(days=max(1, int(self.config["retention_days"])))
+        for path in self.motion_events.glob("*.jsonl"):
+            try:
+                if re.fullmatch(r"\d{4}-\d{2}-\d{2}\.jsonl", path.name) and datetime.strptime(path.stem, "%Y-%m-%d").date() < cutoff:
+                    path.unlink()
+            except (OSError, ValueError):
+                continue
 
     def cleanup_recordings(self) -> None:
         root = self.storage_root(require_space=False)

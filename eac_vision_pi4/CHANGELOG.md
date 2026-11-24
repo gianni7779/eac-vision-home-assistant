@@ -1,5 +1,10 @@
 # Novità
 
+## 0.5.2
+
+- La barra delle registrazioni indica in grigio i movimenti segnalati dal sensore ONVIF di Home Assistant. I dati sono disponibili anche alle app tramite `/eacnvr/events?cam=...&day=...`.
+- Il registro dei movimenti viene pulito secondo i giorni di conservazione configurati. Questa edizione non classifica persone, animali o veicoli: i colori per categoria sono disponibili nell'edizione AI per mini PC.
+
 ## 0.5.1
 
 - Aggiunto il flusso HLS/TS come alternativa al formato fMP4 per i client iPhone con camere H.264.

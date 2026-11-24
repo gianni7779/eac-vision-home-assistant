@@ -1,6 +1,6 @@
 name: EAC Vision Home Assistant
 slug: eac_vision_pi4
-version: "0.5.1"
+version: "0.5.2"
 description: Dashboard e registratore leggero per le telecamere ONVIF di Home Assistant
 arch:
   - aarch64

@@ -72,6 +72,17 @@ async def status(request: web.Request) -> web.Response:
     return web.json_response(vision(request).status(include_key=True))
 
 
+async def motion_events(request: web.Request) -> web.Response:
+    cid = cid_of(request)
+    day = request.query.get("day", "")
+    if not day:
+        return web.json_response([])
+    try:
+        return web.json_response(vision(request).day_events(cid, day))
+    except ValueError as exc:
+        raise web.HTTPBadRequest(text=str(exc)) from exc
+
+
 async def refresh(request: web.Request) -> web.Response:
     try:
         await vision(request).refresh_ha(registry=True)
@@ -325,6 +336,7 @@ def make_ingress(v: Vision) -> web.Application:
     app.router.add_get("/", index)
     app.router.add_static("/web", HERE / "web", show_index=False)
     app.router.add_get("/api/status", status)
+    app.router.add_get("/api/events", motion_events)
     app.router.add_post("/api/refresh", refresh)
     app.router.add_post("/api/cameras/{cid}", set_camera)
     app.router.add_post("/api/storage", set_storage)
@@ -344,6 +356,7 @@ def make_lan(v: Vision) -> web.Application:
     app.router.add_get("/eacnvr/info", nvr_info)
     app.router.add_get("/eacnvr/cameras", nvr_cameras)
     app.router.add_get("/eacnvr/views", nvr_views)
+    app.router.add_get("/eacnvr/events", motion_events)
     app.router.add_get("/eacnvr/live", relay_live)
     app.router.add_get("/eacnvr/hls.m3u8", hls)
     app.router.add_get("/eacnvr/hls/{asset}", hls)
