@@ -1,5 +1,11 @@
 # Novità
 
+## 0.4.0
+
+- Griglia live senza ritaglio o deformazioni: il fotogramma completo conserva le proporzioni originali. Le righe incomplete restano centrate e i riquadri hanno dimensioni uniformi.
+- Clic su una telecamera per aprire la vista singola con audio, passaggio tra camere, schermo intero, ricollegamento e accesso alle registrazioni della camera scelta.
+- Indicazioni nelle impostazioni per collegarsi fuori casa tramite Tailscale o tramite un proxy HTTPS dedicato quando si usa DuckDNS.
+
 ## 0.3.0
 
 - Nuova navigazione con menu laterale su PC e barra inferiore sugli schermi stretti. La vista telecamere resta a schermo pieno e mostra i comandi al passaggio del mouse.

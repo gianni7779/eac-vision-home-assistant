@@ -49,6 +49,14 @@ aggiungi le telecamere importate alla vista con il comando "Vista +".
 Le registrazioni si possono aprire da tutti questi client.
 Non aprire la porta 8766 su Internet.
 
+FUORI CASA
+Con Tailscale attivo su Home Assistant e sul dispositivo da cui guardi,
+inserisci nell'app l'IP Tailscale di Home Assistant (100.x.y.z), porta 8766
+e il codice client. Verifica da remoto che
+http://100.x.y.z:8766/eacnvr/info risponda. DuckDNS da solo apre HA ma non
+inoltra l'API del registratore: per l'app EAC Vision serve un proxy HTTPS
+dedicato a /eacnvr/ con WebSocket, oppure usa Tailscale.
+
 PROVA PRIMA SUL MINI PC
 Se nel mini PC trovi Impostazioni > App > Store, puoi installare questa stessa
 cartella locale. Collega il NAS, configura una camera, verifica live e file MP4,

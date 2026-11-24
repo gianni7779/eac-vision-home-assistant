@@ -50,8 +50,12 @@ async def client_auth(request: web.Request, handler):
     else:
         key = request.query.get("key", "")
         if not secrets.compare_digest(key, vision(request).client_key):
-            raise web.HTTPForbidden(text="Codice di accesso errato")
-        response = await handler(request)
+            response = web.Response(status=403, text="Codice di accesso errato")
+        else:
+            try:
+                response = await handler(request)
+            except web.HTTPException as exc:
+                response = exc
     response.headers["Access-Control-Allow-Origin"] = "*"
     response.headers["Access-Control-Allow-Methods"] = "GET, OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type"

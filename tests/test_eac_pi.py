@@ -80,8 +80,10 @@ class VisionTest(unittest.IsolatedAsyncioTestCase):
         info = await response.json()
         self.assertEqual(info["app"], "EAC Vision NVR")
         self.assertEqual(info["name"], "EAC Vision Home Assistant")
-        self.assertEqual(info["version"], "0.3.0")
-        self.assertEqual((await self.lan.get("/eacnvr/cameras")).status, 403)
+        self.assertEqual(info["version"], "0.4.0")
+        denied = await self.lan.get("/eacnvr/cameras", headers={"Origin": "http://localhost"})
+        self.assertEqual(denied.status, 403)
+        self.assertEqual(denied.headers.get("Access-Control-Allow-Origin"), "*")
         self.assertEqual((await self.ingress.get("/web/icon.png")).status, 200)
         self.assertEqual((await self.ingress.get("/web/dashboard.css")).status, 200)
 

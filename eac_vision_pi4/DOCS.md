@@ -23,6 +23,12 @@ Nella UI **Registrazioni** non devi aprire i segmenti uno per uno: seleziona tel
 
 La porta locale **8766** espone l'API EAC Vision NVR. Nei client PC/TV/telefono inserisci **l'indirizzo del tuo Home Assistant** nella rete locale, la porta **8766** (non 8123) e il codice mostrato nelle Impostazioni dell'app. PC e TV LG/Samsung importano la vista Principale; su Android usa **Vista +** per aggiungere alla vista le telecamere importate. Il live usa WebSocket MSE; le registrazioni sono MP4 accessibili ai client esistenti. La dashboard interna è protetta dall'Ingress di Home Assistant. Non inoltrare la porta 8766 su Internet.
 
+### Fuori casa
+
+**Tailscale:** attiva Tailscale sia sul dispositivo che ospita Home Assistant sia sul PC o telefono da cui guardi. Nell'app EAC Vision inserisci l'IP Tailscale del dispositivo Home Assistant (di solito `100.x.y.z`) o il suo nome MagicDNS, porta **8766**, e il codice client. La porta deve essere raggiungibile nella tailnet. Puoi verificarlo aprendo `http://100.x.y.z:8766/eacnvr/info` dal dispositivo remoto: deve rispondere con le informazioni del registratore. Se Tailscale è installato solo su un altro dispositivo della rete, usa un subnet router correttamente configurato e l'IP locale di Home Assistant.
+
+**DuckDNS:** il nome DuckDNS normalmente apre Home Assistant sulla porta 8123 o dietro un proxy HTTPS. Questo non rende raggiungibile automaticamente l'API di EAC Vision sulla porta 8766. Per usare EAC Vision dall'app attraverso DuckDNS serve un proxy HTTPS che inoltri `/eacnvr/` all'app e supporti WebSocket per il live e richieste Range per le registrazioni. Il proxy deve limitare gli accessi e non registrare il codice client presente negli URL. Nell'app inserisci l'URL HTTPS del proxy, non il normale URL di Home Assistant sulla porta 8123. Non esporre direttamente la porta 8766 con semplice HTTP. Se non hai già un proxy dedicato, usa Tailscale: non richiede di aprire la porta NVR su Internet.
+
 ## Capacità
 
 Il limite software è 16 camere configurate. La dashboard mostra tutte quelle selezionate e apre 4 live per impostazione iniziale, con scelta di 8 o 16. Il Raspberry non decodifica i live: lo fanno i dispositivi che guardano. Il risultato reale dipende da bitrate, Wi-Fi/Ethernet e velocità del NAS. Per stabilire quanti flussi regge **il tuo** Raspberry servono una prova con le 8 camere attuali, temperatura, memoria e registri durante la registrazione.

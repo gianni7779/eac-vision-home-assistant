@@ -5,6 +5,7 @@ const base = location.pathname.endsWith('/') ? location.pathname : location.path
 const apiUrl = path => base + path;
 let state = null, page = 'live', players = [], visibleIds = '', selectedCam = null, toastTimer = 0, hideTimer = 0, storageDirty = false;
 let recordingSegments = [], recordingIndex = -1, pendingSeek = 0, recordingLoad = 0;
+let detailCamId = null, detailPlayer = null, detailCams = [], detailAudioAvailable = false, detailAudioChecked = false, detailAudioOn = false, preferredRecordingCam = null;
 let budget = Number(localStorage.getItem('eac-live-budget') || '4');
 if (![4, 8, 16].includes(budget)) budget = 4;
 $('live-budget').value = String(budget);
@@ -24,6 +25,7 @@ function showControls() {
   hideTimer = setTimeout(() => { if (page === 'live' && !document.body.classList.contains('menu-open')) document.body.classList.remove('controls-visible'); }, 3500);
 }
 function setPage(next) {
+  if (next !== 'live' && detailCamId) closeCameraDetail(false);
   page = next;
   document.body.classList.toggle('live-mode', page === 'live');
   document.body.classList.remove('menu-open');
@@ -45,7 +47,7 @@ function setPage(next) {
 
 function stopPlayers() {
   players.forEach(p => p.stop()); players = [];
-  for (const video of document.querySelectorAll('#camera-grid video')) { video.pause(); video.removeAttribute('src'); video.load(); }
+  for (const video of document.querySelectorAll('#camera-grid video')) { video.pause(); video.removeAttribute('src'); video.load(); video.style.display='none'; }
 }
 function cameraRows(n) {
   const w = $('camera-grid').clientWidth || innerWidth, h = $('camera-grid').clientHeight || innerHeight;
@@ -63,7 +65,9 @@ function makeTile(cam, live) {
   const tile = document.createElement('div'); tile.className='tile'; tile.dataset.id=cam.id;
   const image = document.createElement('img'); image.alt=''; image.loading='lazy'; image.src=apiUrl('api/snapshot/'+encodeURIComponent(cam.id)+'?t='+Date.now()); tile.append(image);
   if (live) {
-    const video=document.createElement('video'); video.autoplay=true; video.muted=true; video.playsInline=true; tile.append(video);
+    const video=document.createElement('video'); video.autoplay=true; video.muted=true; video.playsInline=true; video.style.opacity='0';
+    video.addEventListener('playing',()=>{video.style.opacity='1'});
+    tile.append(video);
     const error=document.createElement('div'); error.className='tile-error'; error.hidden=true; tile.append(error);
     const player=new MsePlayer(video, cam.id, message => { error.textContent=message; error.hidden=false; video.style.display='none'; });
     players.push(player); player.start();
@@ -73,11 +77,14 @@ function makeTile(cam, live) {
   const badge=document.createElement('span'); badge.className='badge'; badge.textContent=live?'LIVE':'ANTEPRIMA'; shade.append(badge);
   tile.append(shade);
   if (cam.recording) { const rec=document.createElement('span'); rec.className='badge rec'; rec.textContent='● REC'; rec.style.cssText='position:absolute;top:12px;right:12px'; tile.append(rec); }
-  tile.addEventListener('click', () => { tile.classList.add('focus'); setTimeout(()=>tile.classList.remove('focus'),3000); });
+  tile.tabIndex=0;tile.setAttribute('role','button');tile.setAttribute('aria-label','Apri '+cam.name);
+  tile.addEventListener('click', () => openCameraDetail(cam.id));
+  tile.addEventListener('keydown', event => {if(event.key==='Enter'||event.key===' '){event.preventDefault();openCameraDetail(cam.id)}});
   return tile;
 }
 function renderLive(force=false) {
   if (!state || page !== 'live') return;
+  if (detailCamId) return;
   const cams=state.cameras.filter(c=>c.selected&&c.has_source).slice(0,16);
   const signature=cams.map(c=>c.id+':'+c.name+':'+c.recording).join('|')+':'+budget;
   if (!force && signature===visibleIds) return;
@@ -86,25 +93,105 @@ function renderLive(force=false) {
   $('empty-live').hidden=cams.length>0; grid.hidden=cams.length===0;
   if (!cams.length) return;
   let offset=0;
-  for (const count of cameraRows(cams.length)) {
+  const counts=cameraRows(cams.length),columns=Math.max(...counts);
+  for (const count of counts) {
     const row=document.createElement('div'); row.className='grid-row';
-    for (let i=0;i<count;i++) { const cam=cams[offset]; row.append(makeTile(cam,offset<budget)); offset++; }
+    for (let i=0;i<count;i++) { const cam=cams[offset];const tile=makeTile(cam,offset<budget);tile.style.flexBasis=`calc((100% - ${(columns-1)*5}px) / ${columns})`;row.append(tile);offset++; }
     grid.append(row);
   }
 }
 
+function detailStatus(message) {
+  $('detail-status').textContent=message;
+  $('detail-status').hidden=!message;
+}
+function updateDetailAudioButton() {
+  const button=$('detail-audio');
+  button.disabled=!detailAudioAvailable;
+  button.textContent=!detailAudioChecked?'🔇 Audio in attesa':detailAudioAvailable?(detailAudioOn?'🔊 Audio attivo':'🔇 Attiva audio'):'🔇 Audio non disponibile';
+  button.setAttribute('aria-pressed',String(detailAudioOn));
+}
+function startDetailStream(id, withAudio) {
+  if(detailCamId!==id)return;
+  if(detailPlayer){detailPlayer.stop();detailPlayer=null}
+  const video=$('detail-video');
+  video.pause();video.removeAttribute('src');video.load();video.style.opacity='0';video.muted=true;
+  const player=new MsePlayer(video,id,message=>{
+    if(detailCamId!==id||detailPlayer!==player)return;
+    if(withAudio){
+      detailAudioOn=false;detailAudioAvailable=false;detailAudioChecked=true;updateDetailAudioButton();
+      detailStatus('Audio non compatibile; avvio il video…');
+      startDetailStream(id,false);
+      return;
+    }
+    video.style.opacity='0';detailStatus(message);
+  },{audio:withAudio,onMime:mime=>{
+    if(detailCamId!==id||detailPlayer!==player)return;
+    detailAudioChecked=true;
+    detailAudioAvailable=withAudio&&/(?:mp4a\.40\.|flac|opus)/i.test(mime);
+    updateDetailAudioButton();
+  },onAutoplayBlocked:()=>{if(detailCamId===id&&detailPlayer===player)detailStatus('Tocca il video per avviare la riproduzione')}});
+  detailPlayer=player;
+  player.start();
+}
+function loadDetailCamera(id) {
+  const cam=detailCams.find(item=>item.id===id);
+  if(!cam)return;
+  detailCamId=id;detailAudioOn=false;detailAudioAvailable=false;detailAudioChecked=false;updateDetailAudioButton();
+  $('detail-name').textContent=cam.name;
+  $('camera-detail').setAttribute('aria-label','Telecamera '+cam.name);
+  $('detail-counter').textContent=(detailCams.indexOf(cam)+1)+' / '+detailCams.length;
+  $('detail-rec').hidden=!cam.recording;
+  $('detail-prev').disabled=detailCams.length<2;$('detail-next').disabled=detailCams.length<2;
+  $('detail-snapshot').src=apiUrl('api/snapshot/'+encodeURIComponent(id)+'?t='+Date.now());
+  detailStatus('Collegamento al video…');
+  startDetailStream(id,true);
+}
+function openCameraDetail(id) {
+  if(!state||page!=='live')return;
+  detailCams=state.cameras.filter(cam=>cam.selected&&cam.has_source).slice(0,16);
+  if(!detailCams.some(cam=>cam.id===id))return;
+  stopPlayers();
+  $('camera-detail').hidden=false;
+  for(const area of ['live-page','topbar','sidebar','mobile-nav'])$(area).inert=true;
+  loadDetailCamera(id);
+  $('detail-close').focus();
+}
+function closeCameraDetail(resume=true) {
+  if(!detailCamId)return;
+  const oldId=detailCamId;
+  if(document.fullscreenElement=== $('camera-detail'))document.exitFullscreen().catch(()=>{});
+  if(detailPlayer){detailPlayer.stop();detailPlayer=null}
+  const video=$('detail-video');video.pause();video.removeAttribute('src');video.load();
+  $('camera-detail').hidden=true;
+  for(const area of ['live-page','topbar','sidebar','mobile-nav'])$(area).inert=false;
+  detailCamId=null;detailCams=[];detailAudioAvailable=false;detailAudioChecked=false;detailAudioOn=false;
+  if(resume&&page==='live'){
+    renderLive(true);
+    const tile=[...document.querySelectorAll('#camera-grid .tile')].find(el=>el.dataset.id===oldId);
+    if(tile)tile.focus();
+  }
+}
+function changeDetailCamera(step) {
+  if(!detailCamId||detailCams.length<2)return;
+  const index=detailCams.findIndex(cam=>cam.id===detailCamId);
+  loadDetailCamera(detailCams[(index+step+detailCams.length)%detailCams.length].id);
+}
+
 class MsePlayer {
-  constructor(video,id,onError) { this.video=video;this.id=id;this.onError=onError;this.queue=[];this.closed=false;this.started=false;this.lastData=Date.now(); }
+  constructor(video,id,onError,options={}) { this.video=video;this.id=id;this.onError=onError;this.options=options;this.queue=[];this.closed=false;this.started=false;this.lastData=Date.now(); }
   start() {
     if (!window.MediaSource) { this.onError('Anteprima disponibile'); return; }
-    const codecs=['avc1.640029','avc1.64002A','avc1.640033','avc1.42E01E','hvc1.1.6.L153.B0'].filter(c=>MediaSource.isTypeSupported('video/mp4; codecs="'+c+'"')).join(',');
+    const videoCodecs=['avc1.640029','avc1.64002A','avc1.640033','avc1.42E01E','hvc1.1.6.L153.B0'];
+    const audioCodecs=this.options.audio?['mp4a.40.2','mp4a.40.5','flac','opus']:[];
+    const codecs=videoCodecs.concat(audioCodecs).filter(c=>{try{return MediaSource.isTypeSupported('video/mp4; codecs="'+c+'"')}catch{return false}}).join(',');
     const url=new URL(apiUrl('api/live/'+encodeURIComponent(this.id)),location.origin); url.protocol=location.protocol==='https:'?'wss:':'ws:';
     const ws=new WebSocket(url); this.ws=ws; ws.binaryType='arraybuffer';
     ws.onopen=()=>ws.send(JSON.stringify({type:'mse',value:codecs}));
     ws.onmessage=event=>{
       if (this.closed) return;
       this.lastData=Date.now();
-      if (typeof event.data==='string') { let message;try{message=JSON.parse(event.data)}catch{return} if(message.type==='mse')this.setup(message.value);else if(message.type==='error')this.onError('Video non disponibile');return; }
+      if (typeof event.data==='string') { let message;try{message=JSON.parse(event.data)}catch{return} if(message.type==='mse'){if(this.options.onMime)this.options.onMime(message.value);this.setup(message.value)}else if(message.type==='error')this.onError('Video non disponibile');return; }
       this.queue.push(new Uint8Array(event.data));this.flush();
     };
     ws.onclose=()=>{if(!this.closed)this.onError('Live interrotto')};
@@ -124,7 +211,7 @@ class MsePlayer {
   }
   updated() {
     if(this.closed||!this.sb)return;
-    try{const b=this.sb.buffered;if(b.length){const start=b.start(0),end=b.end(b.length-1);if(!this.started&&end>start){this.started=true;this.video.currentTime=Math.max(start,end-.6);this.video.play().catch(()=>{})}if(end-this.video.currentTime>4)this.video.currentTime=end-.5;if(end-start>30){this.sb.remove(start,end-15);return}}}catch{}
+    try{const b=this.sb.buffered;if(b.length){const start=b.start(0),end=b.end(b.length-1);if(!this.started&&end>start){this.started=true;this.video.currentTime=Math.max(start,end-.6);this.video.play().catch(()=>{if(this.options.onAutoplayBlocked)this.options.onAutoplayBlocked()})}if(end-this.video.currentTime>4)this.video.currentTime=end-.5;if(end-start>30){this.sb.remove(start,end-15);return}}}catch{}
     this.flush();
   }
   stop() {this.closed=true;clearInterval(this.watch);if(this.ws)this.ws.close();if(this.video)this.video.pause();if(this.objectURL)URL.revokeObjectURL(this.objectURL)}
@@ -277,9 +364,10 @@ function seekRecording(seconds) {
 }
 async function loadRecordings() {
   if(!state)return;
-  const select=$('record-cam'),old=select.value;select.replaceChildren();
+  const select=$('record-cam'),old=preferredRecordingCam||select.value;select.replaceChildren();
   for(const cam of state.cameras.filter(c=>c.has_source)){const opt=document.createElement('option');opt.value=cam.id;opt.textContent=cam.name;select.append(opt)}
   if([...select.options].some(o=>o.value===old))select.value=old;
+  preferredRecordingCam=null;
   const daySelect=$('record-day');
   if(!select.value){daySelect.replaceChildren();showRecordingState('Configura una telecamera ONVIF per vedere le registrazioni.');return}
   const token=++recordingLoad;
@@ -306,6 +394,32 @@ async function loadSegments() {
 }
 
 document.querySelectorAll('.nav').forEach(el=>el.addEventListener('click',()=>setPage(el.dataset.page)));
+$('detail-close').addEventListener('click',()=>closeCameraDetail());
+$('detail-prev').addEventListener('click',()=>changeDetailCamera(-1));
+$('detail-next').addEventListener('click',()=>changeDetailCamera(1));
+$('detail-reload').addEventListener('click',()=>{if(detailCamId)loadDetailCamera(detailCamId)});
+$('detail-audio').addEventListener('click',()=>{
+  if(!detailCamId||!detailAudioAvailable)return;
+  detailAudioOn=!detailAudioOn;
+  const video=$('detail-video');video.muted=!detailAudioOn;
+  updateDetailAudioButton();
+  const id=detailCamId;
+  if(detailAudioOn)video.play().catch(()=>{if(detailCamId===id)detailStatus('Tocca il video per attivare l’audio')});
+});
+$('detail-recordings').addEventListener('click',()=>{if(!detailCamId)return;preferredRecordingCam=detailCamId;closeCameraDetail(false);setPage('recordings')});
+$('detail-fullscreen').addEventListener('click',async()=>{
+  try{if(document.fullscreenElement)await document.exitFullscreen();else await $('camera-detail').requestFullscreen()}
+  catch{toast('Schermo intero non disponibile in questo browser')}
+});
+document.addEventListener('fullscreenchange',()=>{$('detail-fullscreen').textContent=document.fullscreenElement?'⛶ Esci da schermo intero':'⛶ Schermo intero'});
+$('detail-video').addEventListener('playing',()=>{if(detailCamId){$('detail-video').style.opacity='1';detailStatus('')}});
+$('detail-stage').addEventListener('click',()=>{if(detailCamId)$('detail-video').play().catch(()=>detailStatus('Riproduzione non disponibile'))});
+document.addEventListener('keydown',event=>{
+  if(!detailCamId)return;
+  if(event.key==='Escape'&&!document.fullscreenElement){event.preventDefault();closeCameraDetail()}
+  if(event.key==='ArrowLeft'){event.preventDefault();changeDetailCamera(-1)}
+  if(event.key==='ArrowRight'){event.preventDefault();changeDetailCamera(1)}
+});
 function toggleMenu(force) {
   const open=force===undefined?!document.body.classList.contains('menu-open'):force;
   document.body.classList.toggle('menu-open',open);$('nav-backdrop').hidden=!open;
