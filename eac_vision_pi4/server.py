@@ -57,7 +57,7 @@ async def client_auth(request: web.Request, handler):
             except web.HTTPException as exc:
                 response = exc
     response.headers["Access-Control-Allow-Origin"] = "*"
-    response.headers["Access-Control-Allow-Methods"] = "GET, OPTIONS"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type"
     response.headers["Cache-Control"] = "no-store"
     response.headers["Referrer-Policy"] = "no-referrer"
@@ -330,6 +330,35 @@ async def nvr_state(request: web.Request) -> web.Response:
     return web.json_response({"rev": 1, "cams": {}})
 
 
+async def notify_settings(request: web.Request) -> web.Response:
+    v = vision(request)
+    try:
+        if request.method == "POST":
+            body = await request.json()
+            if not isinstance(body, dict):
+                raise ValueError("Impostazioni notifiche non valide")
+            await v.set_notify(body)
+        return web.json_response({"targets": await v.notify_targets(), "labels": ["movimento"],
+                                  "subscriptions": v.config["notify"]})
+    except ValueError as exc:
+        raise web.HTTPBadRequest(text=str(exc)) from exc
+    except (aiohttp.ClientError, asyncio.TimeoutError, RuntimeError) as exc:
+        raise web.HTTPBadGateway(text="Dispositivi Home Assistant non disponibili") from exc
+
+
+async def notify_test(request: web.Request) -> web.Response:
+    v = vision(request)
+    try:
+        body = await request.json()
+        await v.send_notify(str(body.get("target", "")), "EAC Vision · prova",
+                            "Le notifiche sono collegate correttamente.")
+        return web.json_response({"sent": True})
+    except ValueError as exc:
+        raise web.HTTPBadRequest(text=str(exc)) from exc
+    except (aiohttp.ClientError, asyncio.TimeoutError, RuntimeError) as exc:
+        raise web.HTTPBadGateway(text="Notifica di prova non inviata") from exc
+
+
 def make_ingress(v: Vision) -> web.Application:
     app = web.Application(middlewares=[ingress_only])
     app[VISION_KEY] = v
@@ -337,6 +366,9 @@ def make_ingress(v: Vision) -> web.Application:
     app.router.add_static("/web", HERE / "web", show_index=False)
     app.router.add_get("/api/status", status)
     app.router.add_get("/api/events", motion_events)
+    app.router.add_get("/api/notify", notify_settings)
+    app.router.add_post("/api/notify", notify_settings)
+    app.router.add_post("/api/notify-test", notify_test)
     app.router.add_post("/api/refresh", refresh)
     app.router.add_post("/api/cameras/{cid}", set_camera)
     app.router.add_post("/api/storage", set_storage)
@@ -357,6 +389,9 @@ def make_lan(v: Vision) -> web.Application:
     app.router.add_get("/eacnvr/cameras", nvr_cameras)
     app.router.add_get("/eacnvr/views", nvr_views)
     app.router.add_get("/eacnvr/events", motion_events)
+    app.router.add_get("/eacnvr/notify", notify_settings)
+    app.router.add_post("/eacnvr/notify", notify_settings)
+    app.router.add_post("/eacnvr/notify-test", notify_test)
     app.router.add_get("/eacnvr/live", relay_live)
     app.router.add_get("/eacnvr/hls.m3u8", hls)
     app.router.add_get("/eacnvr/hls/{asset}", hls)

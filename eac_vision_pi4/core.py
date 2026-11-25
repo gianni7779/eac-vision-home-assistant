@@ -28,7 +28,7 @@ GO_API = "http://127.0.0.1:11984"
 GO_RTSP = "rtsp://127.0.0.1:18554"
 MAX_CAMERAS = 16
 APP_NAME = "EAC Vision Home Assistant"
-APP_VERSION = "0.5.3"
+APP_VERSION = "0.5.4"
 FILE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}\.mp4$")
 
 
@@ -131,6 +131,7 @@ class Vision:
         self.config.setdefault("show_names", True)
         self.config.setdefault("retention_days", 3)
         self.config.setdefault("max_gb", 0)
+        self.config.setdefault("notify", {})
         if self.config.get("record_policy") != "h24":
             for cam in self.config["cameras"].values():
                 if valid_source(cam.get("source", "")):
@@ -167,6 +168,7 @@ class Vision:
         self.last_loop_error = ""
         self.motion_until: dict[str, float] = {}
         self.motion_events = DATA / "motion_events"
+        self.last_notify: dict[tuple[str, str], float] = {}
         self.memory_paused = False
         self.tasks: list[asyncio.Task] = []
         self._usage_at = 0.0
@@ -358,6 +360,56 @@ class Vision:
                     out.write(json.dumps(event, ensure_ascii=False) + "\n")
             except OSError as exc:
                 print("EAC Vision: archivio movimenti: " + str(exc), flush=True)
+            if self.config["notify"] and self.session and self.token:
+                asyncio.create_task(self.notify_motion(event))
+
+    async def notify_targets(self) -> list[str]:
+        if not self.session or not self.token:
+            raise RuntimeError("Home Assistant non collegato")
+        async with self.session.get(HA_REST + "/services",
+                headers={"Authorization": "Bearer " + self.token}) as response:
+            response.raise_for_status()
+            services = await response.json()
+        return sorted("notify." + name for domain in services if domain.get("domain") == "notify"
+                      for name in domain.get("services", {}) if name.startswith("mobile_app_"))
+
+    async def set_notify(self, body: dict) -> dict:
+        target = str(body.get("target", ""))
+        if target not in await self.notify_targets():
+            raise ValueError("Scegli un dispositivo Home Assistant Companion disponibile")
+        labels = body.get("labels", [])
+        if not isinstance(labels, list) or labels != ["movimento"]:
+            raise ValueError("Questa edizione notifica i movimenti ONVIF")
+        if not isinstance(body.get("enabled"), bool):
+            raise ValueError("Stato notifiche non valido")
+        self.config["notify"][target] = {"enabled": body["enabled"], "labels": labels}
+        self.save()
+        return self.config["notify"][target]
+
+    async def send_notify(self, target: str, title: str, message: str) -> None:
+        if target not in await self.notify_targets():
+            raise ValueError("Dispositivo Home Assistant Companion non disponibile")
+        assert self.session
+        service = target.removeprefix("notify.")
+        async with self.session.post(HA_REST + "/services/notify/" + service,
+                json={"title": title, "message": message},
+                headers={"Authorization": "Bearer " + self.token}) as response:
+            response.raise_for_status()
+            await response.read()
+
+    async def notify_motion(self, event: dict) -> None:
+        for target, choice in list(self.config["notify"].items()):
+            if not choice.get("enabled") or "movimento" not in choice.get("labels", []):
+                continue
+            marker = (target, event["cam"])
+            if time.monotonic() - self.last_notify.get(marker, -1e9) < 60:
+                continue
+            try:
+                await self.send_notify(target, "EAC Vision · movimento",
+                                       event["camName"] + " · rilevato alle " + datetime.fromtimestamp(event["start"] / 1000).strftime("%H:%M"))
+                self.last_notify[marker] = time.monotonic()
+            except Exception as exc:
+                print("EAC Vision: notifica non inviata: " + type(exc).__name__, flush=True)
 
     def day_events(self, cid: str, day: str) -> list[dict]:
         try:

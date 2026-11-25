@@ -125,6 +125,47 @@ class VisionTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue((await disabled.json())["has_source"])
         self.assertFalse((await disabled.json())["selected"])
 
+    async def test_companion_motion_notifications(self):
+        sent = []
+
+        async def services(_):
+            return web.json_response([{"domain": "notify", "services": {"mobile_app_phone": {}, "other": {}}}])
+
+        async def notify(request):
+            sent.append(await request.json())
+            return web.json_response([])
+
+        app = web.Application()
+        app.router.add_get("/api/services", services)
+        app.router.add_post("/api/services/notify/mobile_app_phone", notify)
+        fake = TestServer(app)
+        await fake.start_server()
+        old_rest = core.HA_REST
+        core.HA_REST = str(fake.make_url("/api")).rstrip("/")
+        self.vision.session = aiohttp.ClientSession()
+        self.vision.token = "test-token"
+        key = self.vision.client_key
+        try:
+            self.assertEqual((await self.lan.get("/eacnvr/notify")).status, 403)
+            response = await self.lan.get("/eacnvr/notify?key=" + key)
+            self.assertEqual((await response.json())["labels"], ["movimento"])
+            target = "notify.mobile_app_phone"
+            response = await self.lan.post("/eacnvr/notify?key=" + key,
+                                           json={"target": target, "enabled": True, "labels": ["movimento"]})
+            self.assertEqual(response.status, 200, await response.text())
+            event = {"cam": self.cid, "camName": "Ingresso", "start": int(time.time() * 1000)}
+            await self.vision.notify_motion(event)
+            await self.vision.notify_motion(event)
+            self.assertEqual(len(sent), 1)
+            self.assertIn("Ingresso", sent[0]["message"])
+            response = await self.lan.post("/eacnvr/notify-test?key=" + key, json={"target": target})
+            self.assertEqual(response.status, 200, await response.text())
+            self.assertEqual(len(sent), 2)
+        finally:
+            await self.vision.session.close()
+            await fake.close()
+            core.HA_REST = old_rest
+
     async def test_existing_motion_configuration_moves_to_h24(self):
         cid = self.cid
         core.atomic_json(core.DATA / "vision.json", {"cameras": {cid: {
