@@ -158,6 +158,7 @@ class VisionTest(unittest.IsolatedAsyncioTestCase):
             await self.vision.notify_motion(event)
             self.assertEqual(len(sent), 1)
             self.assertIn("Ingresso", sent[0]["message"])
+            self.assertEqual(sent[0]["data"]["url"], "eacvision://live?cam=" + self.cid)
             response = await self.lan.post("/eacnvr/notify-test?key=" + key, json={"target": target})
             self.assertEqual(response.status, 200, await response.text())
             self.assertEqual(len(sent), 2)
@@ -331,6 +332,10 @@ class VisionTest(unittest.IsolatedAsyncioTestCase):
             await fake.close()
 
     async def test_home_assistant_onvif_and_motion_events(self):
+        self.assertFalse(self.vision.config["cameras"][self.cid]["motion_events_enabled"])
+        enabled = await self.ingress.post("/api/cameras/" + self.cid, json={"motion_events_enabled": True})
+        self.assertEqual(enabled.status, 200, await enabled.text())
+        self.assertTrue((await enabled.json())["motion_events_enabled"])
         async def states(_request):
             return web.json_response([
                 {"entity_id": "camera.front", "state": "idle", "attributes": {"friendly_name": "Ingresso"}},

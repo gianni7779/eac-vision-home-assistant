@@ -112,10 +112,16 @@ async def set_camera(request: web.Request) -> web.Response:
             raise web.HTTPBadRequest(text="Scegli un sensore ONVIF della stessa telecamera")
     if mode == "motion" and not motion_entity:
         raise web.HTTPBadRequest(text="Per registrare al movimento serve un sensore ONVIF")
+    motion_events_enabled = body.get("motion_events_enabled", cam.get("motion_events_enabled", False))
+    if not isinstance(motion_events_enabled, bool):
+        raise web.HTTPBadRequest(text="Stato movimenti ONVIF non valido")
+    if motion_events_enabled and not motion_entity:
+        raise web.HTTPBadRequest(text="Nessun sensore di movimento ONVIF per questa telecamera")
     if "name" in body:
         cam["name"] = str(body["name"]).strip()[:80] or cam["name"]
     cam["mode"] = mode
     cam["motion_entity"] = motion_entity
+    cam["motion_events_enabled"] = motion_events_enabled
     if "selected" in body:
         selected = v.config["selected"]
         if body["selected"] is True and cid not in selected:
@@ -291,7 +297,8 @@ async def nvr_cameras(request: web.Request) -> web.Response:
     v = vision(request)
     cams = [{"id": cid, "name": cam.get("name", cid), "sub": False, "snapshot": True, "mjpeg": False,
              "convert": False, "recorded": cam.get("mode") != "off" and bool(v.storage_root(require_space=False)),
-             "recording": cid in v.recorders and v.recorders[cid].returncode is None}
+             "recording": cid in v.recorders and v.recorders[cid].returncode is None,
+             "recordedAudio": v.recorded_audio(cid)}
             for cid, cam in v.configured()]
     return web.json_response({"name": APP_NAME, "cams": cams, "mosaic": False})
 

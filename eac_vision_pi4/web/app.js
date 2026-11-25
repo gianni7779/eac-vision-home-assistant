@@ -260,6 +260,8 @@ function renderSettings() {
     const detail=document.createElement('span');detail.className='muted';detail.textContent=cam.mode==='continuous'?'Registrazione continua':cam.mode==='motion'?'Registrazione al movimento':'Solo visione';bottom.append(detail);
     const button=document.createElement('button');button.textContent='Configura';button.addEventListener('click',()=>openCamera(cam));bottom.append(button);card.append(bottom);list.append(card);
     if(cam.record_error){const warning=document.createElement('small');warning.className='state';warning.textContent=cam.record_error;card.append(warning)}
+    if(cam.recorded_audio===false){const warning=document.createElement('small');warning.className='state';warning.textContent='Audio assente nel flusso ONVIF: attiva il microfono e il profilo ONVIF con audio.';card.append(warning)}
+    if(cam.recorded_audio===true){const audio=document.createElement('small');audio.className='state ok';audio.textContent='Audio incluso nelle registrazioni';card.append(audio)}
   }
   if(!storageDirty){$('storage-path').value=state.storage.path||'';$('retention-days').value=state.retention_days;$('max-gb').value=state.max_gb}
   $('storage-pill').textContent=state.storage.ready?'● Disco pronto':'● Disco non pronto';$('storage-pill').classList.toggle('ok',state.storage.ready);
@@ -271,13 +273,16 @@ function renderSettings() {
 function openCamera(cam) {
   selectedCam=cam;$('dialog-title').textContent=cam.name;$('dialog-entity').textContent=cam.entity_id;
   $('cam-name').value=cam.name;$('cam-mode').value=cam.mode;
+  $('cam-motion-events').checked=cam.motion_events_enabled===true;
+  $('cam-motion-events').disabled=!cam.motion_entity;
+  $('cam-motion-hint').textContent=cam.motion_entity?'Sensore ONVIF: '+cam.motion_entity:'Nessun sensore di movimento ONVIF associato a questa camera.';
   $('cam-selected').checked=cam.selected;
   $('source-hint').textContent=cam.has_source?'Il profilo video arriva dall’integrazione ONVIF di Home Assistant.':'Flusso non disponibile: controlla la telecamera nell’integrazione ONVIF di Home Assistant.';
   $('camera-dialog').showModal();
 }
 async function saveCamera(event) {
   event.preventDefault();if(!selectedCam)return;
-  const body={name:$('cam-name').value,mode:$('cam-mode').value,selected:$('cam-selected').checked};
+  const body={name:$('cam-name').value,mode:$('cam-mode').value,selected:$('cam-selected').checked,motion_events_enabled:$('cam-motion-events').checked};
   try{await request('api/cameras/'+encodeURIComponent(selectedCam.id),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});$('camera-dialog').close();toast('Telecamera salvata');await update()}catch(error){toast(error.message)}
 }
 async function saveStorage(event) {

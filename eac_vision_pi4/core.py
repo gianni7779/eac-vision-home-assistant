@@ -28,7 +28,7 @@ GO_API = "http://127.0.0.1:11984"
 GO_RTSP = "rtsp://127.0.0.1:18554"
 MAX_CAMERAS = 16
 APP_NAME = "EAC Vision Home Assistant"
-APP_VERSION = "0.5.4"
+APP_VERSION = "0.5.5"
 FILE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}\.mp4$")
 
 
@@ -174,6 +174,7 @@ class Vision:
         self._usage_at = 0.0
         self._usage_bytes = 0
         self._cpu_sample: tuple[float, int] | None = None
+        self._audio_cache: dict[str, tuple[float, bool | None]] = {}
 
     def set_client_key(self, value: str) -> None:
         if not re.fullmatch(r"[A-Za-z0-9_-]{12,64}", value):
@@ -185,7 +186,7 @@ class Vision:
         self.client_key = value
 
     def usage_bytes(self) -> int:
-        if time.monotonic() - self._usage_at > 60:
+        if not self._usage_at:
             self._usage_bytes = sum(p.stat().st_size for cid in self.config["cameras"]
                                     for p in self.recording_files(cid))
             self._usage_at = time.monotonic()
@@ -258,7 +259,7 @@ class Vision:
                     "motion_entity": motion_by_device.get(ent.get("device_id", ""), "")}
             found.append(item)
             if cid not in self.config["cameras"]:
-                self.config["cameras"][cid] = {"entity_id": entity, "name": item["name"], "mode": "continuous", "motion_entity": item["motion_entity"]}
+                self.config["cameras"][cid] = {"entity_id": entity, "name": item["name"], "mode": "continuous", "motion_entity": item["motion_entity"], "motion_events_enabled": False}
                 changed = True
                 if cid not in self.config["selected"] and len(self.config["selected"]) < MAX_CAMERAS:
                     self.config["selected"].append(cid)
@@ -349,7 +350,7 @@ class Vision:
     def record_motion_event(self, entity: str) -> None:
         now = datetime.now()
         for cid, cam in self.configured():
-            if cam.get("motion_entity") != entity:
+            if not cam.get("motion_events_enabled", False) or cam.get("motion_entity") != entity:
                 continue
             event = {"id": now.strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(4),
                      "cam": cid, "camName": cam["name"], "label": "movimento", "score": 0,
@@ -386,13 +387,17 @@ class Vision:
         self.save()
         return self.config["notify"][target]
 
-    async def send_notify(self, target: str, title: str, message: str) -> None:
+    async def send_notify(self, target: str, title: str, message: str, camera_id: str = "") -> None:
         if target not in await self.notify_targets():
             raise ValueError("Dispositivo Home Assistant Companion non disponibile")
         assert self.session
         service = target.removeprefix("notify.")
+        payload = {"title": title, "message": message}
+        if re.fullmatch(r"cam_[0-9a-f]{12}", camera_id):
+            link = "eacvision://live?cam=" + camera_id
+            payload["data"] = {"url": link, "clickAction": "deep-link://" + link}
         async with self.session.post(HA_REST + "/services/notify/" + service,
-                json={"title": title, "message": message},
+                json=payload,
                 headers={"Authorization": "Bearer " + self.token}) as response:
             response.raise_for_status()
             await response.read()
@@ -406,7 +411,7 @@ class Vision:
                 continue
             try:
                 await self.send_notify(target, "EAC Vision · movimento",
-                                       event["camName"] + " · rilevato alle " + datetime.fromtimestamp(event["start"] / 1000).strftime("%H:%M"))
+                                       event["camName"] + " · rilevato alle " + datetime.fromtimestamp(event["start"] / 1000).strftime("%H:%M"), event["cam"])
                 self.last_notify[marker] = time.monotonic()
             except Exception as exc:
                 print("EAC Vision: notifica non inviata: " + type(exc).__name__, flush=True)
@@ -516,6 +521,8 @@ class Vision:
         self.save()
 
     def motion_active(self, cid: str, cam: dict) -> bool:
+        if not cam.get("motion_events_enabled", False):
+            return False
         entity = cam.get("motion_entity", "")
         active = bool(entity and self.states.get(entity, {}).get("state") == "on" and not self.ha_error)
         if active:
@@ -531,7 +538,7 @@ class Vision:
         args = [FFMPEG, "-hide_banner", "-loglevel", "error", "-progress", "pipe:1", "-stats_period", "5",
                 "-rtsp_transport", "tcp", "-i", GO_RTSP + "/" + cid,
                 "-map", "0:v:0", "-map", "0:a:0?", "-c:v", "copy", "-c:a", "aac", "-b:a", "48k", "-ac", "1",
-                "-f", "segment", "-segment_time", "300",
+                "-f", "segment", "-segment_time", "60",
                 "-segment_atclocktime", "1", "-reset_timestamps", "1", "-strftime", "1",
                 str(folder / "%Y-%m-%d_%H-%M-%S.mp4")]
         try:
@@ -665,6 +672,27 @@ class Vision:
     def days(self, cid: str) -> list[dict]:
         return [{"day": day} for day in sorted({p.name[:10] for p in self.completed_recording_files(cid)}, reverse=True)]
 
+    def recorded_audio(self, cid: str) -> bool | None:
+        """Read the last completed MP4 track table, cached for five minutes."""
+        cached = self._audio_cache.get(cid)
+        if cached and time.monotonic() - cached[0] < 300:
+            return cached[1]
+        result = None
+        try:
+            files = self.completed_recording_files(cid)
+            if files:
+                path = files[-1]
+                with path.open("rb") as video:
+                    video.seek(max(0, path.stat().st_size - 1024 * 1024))
+                    tail = video.read()
+                moov = tail.rfind(b"moov")
+                if moov >= 0:
+                    result = b"soun" in tail[moov:]
+        except OSError:
+            pass
+        self._audio_cache[cid] = (time.monotonic(), result)
+        return result
+
     async def cleanup_loop(self) -> None:
         while True:
             try:
@@ -687,26 +715,32 @@ class Vision:
         root = self.storage_root(require_space=False)
         if not root:
             return
-        files = [p for cid in self.config["cameras"] for p in self.recording_files(cid)]
-        files.sort(key=lambda p: p.name)
+        by_camera = {cid: self.recording_files(cid) for cid in self.config["cameras"]}
+        files = sorted((p for camera_files in by_camera.values() for p in camera_files), key=lambda p: p.name)
         cutoff = time.time() - int(self.config.get("retention_days", 3)) * 86400
         active = set()
         for cid in self.recorders:
-            owned = self.recording_files(cid)
+            owned = by_camera.get(cid, [])
             if owned:
                 active.add(owned[-1])
-        total = sum(p.stat().st_size for p in files)
+        file_stats = []
+        for path in files:
+            try:
+                file_stats.append((path, path.stat()))
+            except OSError:
+                continue
+        total = sum(stat.st_size for _, stat in file_stats)
         disk = shutil.disk_usage(root)
         configured_limit = int(self.config.get("max_gb", 0)) * 1024**3
         limit = configured_limit or int(disk.total * .8)
         reserve = max(2 * 1024**3, int(disk.total * .05))
         free = disk.free
-        for path in files:
+        for path, stat in file_stats:
             try:
                 if path in active:
                     continue
-                if path.stat().st_mtime < cutoff or total > limit or free < reserve:
-                    size = path.stat().st_size
+                if stat.st_mtime < cutoff or total > limit or free < reserve:
+                    size = stat.st_size
                     path.unlink()
                     total -= size
                     free += size
@@ -718,9 +752,11 @@ class Vision:
     def public_camera(self, cid: str, cam: dict) -> dict:
         return {"id": cid, "entity_id": cam.get("entity_id", ""), "name": cam.get("name", cid),
                 "has_source": cid in self.sources, "mode": cam.get("mode", "off"),
-                "motion_entity": cam.get("motion_entity", ""), "motion": self.states.get(cam.get("motion_entity", ""), {}).get("state") == "on",
+                "motion_entity": cam.get("motion_entity", ""), "motion": cam.get("motion_events_enabled", False) and self.states.get(cam.get("motion_entity", ""), {}).get("state") == "on",
+                "motion_events_enabled": cam.get("motion_events_enabled", False),
                 "recording": cid in self.recorders and self.recorders[cid].returncode is None,
                 "record_error": self.record_errors.get(cid, ""),
+                "recorded_audio": self.recorded_audio(cid) if cam.get("mode") != "off" else None,
                 "selected": cid in self.config["selected"]}
 
     def status(self, include_key: bool = False) -> dict:

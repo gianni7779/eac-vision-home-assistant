@@ -1,5 +1,11 @@
 # Novità
 
+## 0.5.5
+
+- Movimento ONVIF attivabile per ogni camera nelle impostazioni; le nuove camere partono con il rilevamento disattivato, mentre la registrazione H24 resta indipendente.
+- Le notifiche Companion contengono il collegamento al live della camera per EAC Vision iPhone 1.2.3.
+- Le nuove registrazioni si chiudono circa ogni minuto. Le impostazioni indicano la presenza della traccia audio nell'ultimo file completato. Ridotte le scansioni del NAS per spazio usato e pulizia.
+
 ## 0.5.2
 
 - La barra delle registrazioni indica in grigio i movimenti segnalati dal sensore ONVIF di Home Assistant. I dati sono disponibili anche alle app tramite `/eacnvr/events?cam=...&day=...`.
