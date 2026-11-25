@@ -1,5 +1,9 @@
 # Novità
 
+## 0.5.6
+
+- I file H.265 marcati `hev1` vengono preparati come `hvc1` quando si aprono le registrazioni su iPhone. Il video non viene ricodificato: una sola preparazione per file, con cache limitata a 96 MB per contenere il lavoro sul Raspberry Pi 4.
+
 ## 0.5.5
 
 - Movimento ONVIF attivabile per ogni camera nelle impostazioni; le nuove camere partono con il rilevamento disattivato, mentre la registrazione H24 resta indipendente.

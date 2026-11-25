@@ -16,6 +16,7 @@ RUN set -eu; \
 
 COPY server.py /opt/eac/server.py
 COPY core.py /opt/eac/core.py
+COPY mp4_compat.py /opt/eac/mp4_compat.py
 COPY web/ /opt/eac/web/
 COPY run.sh /run.sh
 RUN chmod 755 /run.sh

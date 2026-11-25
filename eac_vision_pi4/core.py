@@ -16,6 +16,7 @@ from pathlib import Path
 from urllib.parse import quote, urlencode, urlsplit
 
 import aiohttp
+from mp4_compat import Mp4Compatibility
 
 DATA = Path(os.environ.get("EAC_DATA", "/data"))
 MEDIA = Path(os.environ.get("EAC_MEDIA", "/media"))
@@ -28,7 +29,7 @@ GO_API = "http://127.0.0.1:11984"
 GO_RTSP = "rtsp://127.0.0.1:18554"
 MAX_CAMERAS = 16
 APP_NAME = "EAC Vision Home Assistant"
-APP_VERSION = "0.5.5"
+APP_VERSION = "0.5.6"
 FILE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}\.mp4$")
 
 
@@ -175,6 +176,7 @@ class Vision:
         self._usage_bytes = 0
         self._cpu_sample: tuple[float, int] | None = None
         self._audio_cache: dict[str, tuple[float, bool | None]] = {}
+        self.mp4_compat = Mp4Compatibility(DATA, FFMPEG, max_bytes=96 * 1024 * 1024)
 
     def set_client_key(self, value: str) -> None:
         if not re.fullmatch(r"[A-Za-z0-9_-]{12,64}", value):
