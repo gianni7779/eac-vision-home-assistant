@@ -47,3 +47,34 @@ jobs:
       - name: Stop test add-on
         if: always()
         run: docker rm -f eac-vision-arm64-smoke 2>/dev/null || true
+      - name: Record eight synthetic RTSP cameras under a memory limit
+        run: |
+          mkdir -p "$RUNNER_TEMP/eac-recording/media/nas"
+          docker run -d --name eac-mediamtx --network host -e MTX_RTSPTRANSPORTS=tcp bluenviron/mediamtx:1
+          docker run --rm --entrypoint ffmpeg -v "$RUNNER_TEMP/eac-recording:/test" eac-vision-ha-arm64:test \
+            -hide_banner -loglevel error -y -f lavfi -i testsrc2=size=1280x720:rate=15 \
+            -f lavfi -i sine=frequency=440:sample_rate=16000 -t 12 \
+            -c:v libx264 -preset ultrafast -b:v 1500k -g 30 -pix_fmt yuv420p \
+            -c:a aac -b:a 48k /test/sample.mp4
+          for index in $(seq 0 7); do
+            docker run -d --name "eac-camera-$index" --network host \
+              -v "$RUNNER_TEMP/eac-recording:/test:ro" --entrypoint ffmpeg eac-vision-ha-arm64:test \
+              -hide_banner -loglevel error -re -stream_loop -1 -i /test/sample.mp4 \
+              -c copy -f rtsp -rtsp_transport tcp "rtsp://127.0.0.1:8554/cam$index"
+          done
+          sleep 5
+          for index in $(seq 0 7); do
+            docker run --rm --network host --entrypoint ffprobe eac-vision-ha-arm64:test \
+              -v error -rtsp_transport tcp -show_entries stream=codec_name -of json \
+              "rtsp://127.0.0.1:8554/cam$index" >/dev/null
+          done
+          docker run --rm --network host --memory=1g --cpus=2 \
+            -v "$RUNNER_TEMP/eac-recording/media:/media" \
+            -v "$PWD/tests/arm64_recording_smoke.py:/tmp/arm64_recording_smoke.py:ro" \
+            --entrypoint python3 eac-vision-ha-arm64:test /tmp/arm64_recording_smoke.py
+      - name: Stop synthetic cameras
+        if: always()
+        run: |
+          for index in $(seq 0 7); do docker rm -f "eac-camera-$index" 2>/dev/null || true; done
+          docker logs eac-mediamtx 2>&1 | tail -30 || true
+          docker rm -f eac-mediamtx 2>/dev/null || true
