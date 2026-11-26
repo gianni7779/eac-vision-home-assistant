@@ -29,7 +29,7 @@ GO_API = "http://127.0.0.1:11984"
 GO_RTSP = "rtsp://127.0.0.1:18554"
 MAX_CAMERAS = 16
 APP_NAME = "EAC Vision Home Assistant"
-APP_VERSION = "0.5.6"
+APP_VERSION = "0.5.7"
 FILE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}\.mp4$")
 
 
@@ -779,7 +779,7 @@ class Vision:
                   "memory_available_mb": memory_available_mb(), "memory_paused": self.memory_paused,
                   "app_memory_mb": resources["memory_mb"], "app_cpu_percent": cpu,
                   "max_cameras": MAX_CAMERAS, "retention_days": self.config["retention_days"], "max_gb": self.config["max_gb"],
-                  "show_names": self.config["show_names"]}
+                  "show_names": self.config["show_names"], "selected_order": list(self.config["selected"])}
         if include_key:
             result["client_key"] = self.client_key
         return result

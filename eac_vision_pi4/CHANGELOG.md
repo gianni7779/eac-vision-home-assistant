@@ -1,5 +1,9 @@
 # Novità
 
+## 0.5.7
+
+- La vista Telecamere permette di riordinare le camere con trascinamento su PC oppure toccando camera e posizione. L'ordine resta salvato e viene restituito anche alle app collegate.
+
 ## 0.5.6
 
 - I file H.265 marcati `hev1` vengono preparati come `hvc1` quando si aprono le registrazioni su iPhone. Il video non viene ricodificato: una sola preparazione per file, con cache limitata a 96 MB per contenere il lavoro sul Raspberry Pi 4.

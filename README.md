@@ -9,7 +9,7 @@ Repository per installare **EAC Vision Home Assistant** dallo Store delle App di
 3. Incolla `https://github.com/gianni7779/eac-vision-home-assistant` e premi **Aggiungi**.
 4. Cerca **EAC Vision Home Assistant** nello Store, poi installa e avvia l'app.
 
-Se l'hai già installata, apri la pagina dell'app nello Store, aggiorna il repository dal menu dello Store e premi **Aggiorna** quando compare la versione **0.5.6**. Le impostazioni dell'app restano nella cartella dati di Home Assistant.
+Se l'hai già installata, apri la pagina dell'app nello Store, aggiorna il repository dal menu dello Store e premi **Aggiorna** quando compare la versione **0.5.7**. Le impostazioni dell'app restano nella cartella dati di Home Assistant.
 
 Puoi anche aprire direttamente il [collegamento per aggiungere il repository](https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2Fgianni7779%2Feac-vision-home-assistant), scegliere il tuo Home Assistant e confermare l'aggiunta.
 
@@ -19,7 +19,7 @@ Nella scheda **Registrazioni** scegli telecamera e giorno, poi l'orario sulla ba
 
 Gli avvisi di movimento tramite Home Assistant Companion sono facoltativi: abilita i movimenti ONVIF nella configurazione della telecamera, poi nelle impostazioni dell'app sul telefono scegli il dispositivo Companion. Gli avvisi arrivano anche con EAC Vision chiusa; con EAC Vision iPhone 1.2.3 il tocco apre il live della camera tramite collegamento all'app.
 
-La vista **Telecamere** mostra l'intero fotogramma senza ritagli. Clicca una camera per aprirla da sola, attivare l'audio se disponibile, andare alle sue registrazioni o usare lo schermo intero. Per collegare l'app EAC Vision fuori casa puoi usare l'IP Tailscale di Home Assistant e la porta 8766; [la guida](eac_vision_pi4/DOCS.md#fuori-casa) spiega anche il caso DuckDNS.
+La vista **Telecamere** mostra l'intero fotogramma senza ritagli. Clicca una camera per aprirla da sola, attivare l'audio se disponibile, andare alle sue registrazioni o usare lo schermo intero. Per cambiare la disposizione, premi **Sposta** nella barra in alto e tocca la camera da spostare e poi la nuova posizione; su PC puoi anche trascinarla. Premi **Fine** per tornare al live normale. L'ordine viene salvato e condiviso con le app EAC Vision collegate. Per collegare l'app EAC Vision fuori casa puoi usare l'IP Tailscale di Home Assistant e la porta 8766; [la guida](eac_vision_pi4/DOCS.md#fuori-casa) spiega anche il caso DuckDNS.
 
 Per configurazione, limiti e prova iniziale su mini PC: [guida completa](eac_vision_pi4/DOCS.md).
 
