@@ -1,0 +1,49 @@
+name: ARM64 add-on smoke test
+
+on:
+  push:
+    paths:
+      - "eac_vision_pi4/**"
+      - "tests/**"
+      - ".github/workflows/arm64-smoke.yml"
+  workflow_dispatch:
+
+jobs:
+  arm64:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Home Assistant ARM64 image
+        run: docker build --build-arg BUILD_ARCH=aarch64 -t eac-vision-ha-arm64:test ./eac_vision_pi4
+      - name: Verify architecture and run tests inside the image
+        run: |
+          docker run --rm --entrypoint sh eac-vision-ha-arm64:test -c 'test "$(uname -m)" = aarch64 && test -x /usr/local/bin/go2rtc && ffmpeg -version >/dev/null && python3 -m py_compile /opt/eac/core.py /opt/eac/server.py'
+          docker run --rm --entrypoint python3 -v "$PWD:/work:ro" -w /work eac-vision-ha-arm64:test -m unittest discover -s tests
+      - name: Boot add-on and check HTTP status
+        run: |
+          expected_version="$(sed -n 's/^version: *"\([^"]*\)".*/\1/p' eac_vision_pi4/config.yaml)"
+          docker run -d --name eac-vision-arm64-smoke -e EAC_DEV=1 -p 127.0.0.1:18099:8099 eac-vision-ha-arm64:test
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent --show-error http://127.0.0.1:18099/api/status -o /tmp/eac-status.json; then
+              break
+            fi
+            sleep 2
+          done
+          EAC_EXPECTED_VERSION="$expected_version" python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          status = json.loads(Path("/tmp/eac-status.json").read_text())
+          assert status["version"] == os.environ["EAC_EXPECTED_VERSION"], status
+          assert status["max_cameras"] == 16, status
+          assert status["relay"] is True, status
+          assert status["ffmpeg"] is True, status
+          print("ARM64 add-on booted with go2rtc and FFmpeg:", status["version"])
+          PY
+      - name: Print add-on logs
+        if: always()
+        run: docker logs eac-vision-arm64-smoke 2>&1 || true
+      - name: Stop test add-on
+        if: always()
+        run: docker rm -f eac-vision-arm64-smoke 2>/dev/null || true
